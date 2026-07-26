@@ -28,6 +28,7 @@ from merge_output_pdfs import (  # noqa: E402
     invoice_sequence,
     render_pdf_pages,
 )
+from merge_output_pdfs import collect_pdfs, invoice_sequence  # noqa: E402
 from verify_screenshot_coverage import build_issue_summary  # noqa: E402
 
 
