@@ -18,6 +18,9 @@ Each key in the fix dict completely replaces the corresponding key in
 the invoice entry.  To remove items from an array (e.g. delete a negative
 adjustment row from 项目列表), include only the items to keep.
 
+Nested fields use the standard dot-notation path format, for example
+"项目列表.0.项目名称".  Top-level fields use their field name directly.
+
 Sanity checks:
   - 价税合计金额 / 单价 must be non-negative numbers
   - 购买方税号 / 销售方税号 must be strings ≥ 15 chars
@@ -47,6 +50,22 @@ def _resolve(target: dict, path: str):
     return obj, parts[-1]
 
 
+def _validate(fn: str, key: str, value) -> None:
+    if key in ("价税合计金额", "单价") and isinstance(value, (int, float)):
+        assert value >= 0, f"金额为负: {fn}.{key} = {value}"
+    if key in ("购买方税号", "销售方税号"):
+        assert isinstance(value, str) and len(value) >= 15, \
+            f"税号过短: {fn}.{key} = {value!r}"
+    if key == "发票号码状态":
+        assert value in ("正常", "需人工校验"), \
+            f"非法发票号码状态: {fn}.{key} = {value!r}"
+    if key == "开票时间":
+        assert isinstance(value, list), f"开票时间格式错误: {fn}"
+        for d in value:
+            assert all(k in d for k in ("年", "月", "日")), \
+                f"开票时间缺少字段: {fn}"
+
+
 def _check(result: dict, fixes: dict) -> int:
     fixed_count = 0
     for inv in result["发票信息"]:
@@ -55,24 +74,13 @@ def _check(result: dict, fixes: dict) -> int:
             continue
         fix = fixes[fn]
         for key, value in fix.items():
-            # Support dot-notation paths e.g. "项目列表.0.项目名称"
+            # Dot-notation is the standard nested-field format for invoice fixes.
             if "." in key:
                 parent, leaf = _resolve(inv, key)
+                _validate(fn, leaf, value)
                 parent[leaf] = value
                 continue
-            if key in ("价税合计金额", "单价") and isinstance(value, (int, float)):
-                assert value >= 0, f"金额为负: {fn}.{key} = {value}"
-            if key in ("购买方税号", "销售方税号"):
-                assert isinstance(value, str) and len(value) >= 15, \
-                    f"税号过短: {fn}.{key} = {value!r}"
-            if key == "发票号码状态":
-                assert value in ("正常", "需人工校验"), \
-                    f"非法发票号码状态: {fn}.{key} = {value!r}"
-            if key == "开票时间":
-                assert isinstance(value, list), f"开票时间格式错误: {fn}"
-                for d in value:
-                    assert all(k in d for k in ("年", "月", "日")), \
-                        f"开票时间缺少字段: {fn}"
+            _validate(fn, key, value)
             inv[key] = value
         fixed_count += 1
     return fixed_count

@@ -14,6 +14,7 @@ SCRIPTS = REPO_ROOT / "skills" / "reimbursement" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from _pathutil import INTERNAL_DIR, resolve_path  # noqa: E402
+from apply_invoice_fixes import _check  # noqa: E402
 from apply_match_actions import ActionError, slot_counts, validate_unique_slots  # noqa: E402
 from generate_reimbursement_xlsx import build_rows, first_item_quantity  # noqa: E402
 from merge_output_pdfs import (  # noqa: E402
@@ -124,6 +125,42 @@ class ReimbursementXlsxTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             build_rows(Path("."), invoices, {})
+
+
+class InvoiceFixPathTests(unittest.TestCase):
+    def test_dot_notation_is_the_standard_nested_field_format(self) -> None:
+        result = {
+            "发票信息": [{
+                "文件名": "example.pdf",
+                "项目列表": [
+                    {"项目名称": "旧名称", "单价": 1.0},
+                    *[{"项目名称": f"项目{i}", "单价": float(i)} for i in range(1, 13)],
+                ],
+            }]
+        }
+        fixes = {
+            "example.pdf": {
+                "项目列表.0.项目名称": "新名称",
+                "项目列表.12.单价": 12.5,
+            }
+        }
+
+        self.assertEqual(_check(result, fixes), 1)
+        items = result["发票信息"][0]["项目列表"]
+        self.assertEqual(items[0]["项目名称"], "新名称")
+        self.assertEqual(items[12]["单价"], 12.5)
+
+    def test_dot_notation_keeps_nested_price_validation(self) -> None:
+        result = {
+            "发票信息": [{
+                "文件名": "example.pdf",
+                "项目列表": [{"项目名称": "项目", "单价": 1.0}],
+            }]
+        }
+        fixes = {"example.pdf": {"项目列表.0.单价": -1}}
+
+        with self.assertRaisesRegex(AssertionError, "金额为负"):
+            _check(result, fixes)
 
 
 class MatchActionValidationTests(unittest.TestCase):
