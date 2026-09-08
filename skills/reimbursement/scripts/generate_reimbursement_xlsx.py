@@ -5,6 +5,12 @@ No intermediate CSV
     Reads invoice_results_sorted.json and 匹配记录.json directly.
     The legacy CSV step was removed — this script handles the full pipeline.
 
+Category filtering
+    大额发票 (单价>1000, 非辰景) leave the ordinary flow and are excluded here;
+    they are handled by ``generate_high_value_invoices.py``.  辰景发票 stay in
+    the 报账单.  ``generate_expense_record_docx.py`` applies the same filter so
+    both deliverables keep identical row counts and ordering.
+
 Content inference (expense_content)
     Item text from the invoice is classified by keyword:
       - 轴承 → "轴承"
@@ -37,6 +43,7 @@ from typing import Any
 from lxml import etree
 
 from _pathutil import add_root_arg, resolve_path
+from _invoice_filters import ordinary_invoices
 from _matching_records import DEFAULT_MATCH_RECORD as DEFAULT_MATCH_RECORD_PATH, invoice_key, load_match_record
 
 
@@ -171,6 +178,8 @@ def build_rows(root: Path, invoices: list[dict[str, Any]], purchase_dates: dict[
         quantity = first_item_quantity(root / "invoices" / str(inv.get("文件名") or ""))
         unit_price = (amount / quantity).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
         if unit_price > Decimal("1000"):
+            # 兜底断言：大额发票应已被 generate() 的 ordinary_invoices() 过滤掉。
+            # 走到这里说明分类判定与本处推算的单价不一致，需要人工核对发票。
             raise RuntimeError(
                 f"unit price exceeds 1000 for {inv.get('文件名')}: {amount} / {quantity} = {unit_price}"
             )
@@ -289,9 +298,16 @@ def fill_row(row: etree._Element, row_index: int, data: dict[str, str]) -> None:
 def generate(args: argparse.Namespace) -> None:
     root = args.root.resolve()
     invoices_data = read_json(resolve_path(root, args.sorted_json))
-    invoices = invoices_data.get("发票信息", [])
-    if not invoices:
+    all_invoices = invoices_data.get("发票信息", [])
+    if not all_invoices:
         raise RuntimeError("No invoices found in sorted JSON")
+    # 大额发票（单价>1000 非辰景）不参与普通线上流程，改由
+    # generate_high_value_invoices.py 产出单价大额发票汇总表材料。
+    # 支出记录 DOCX 用同一个过滤器，两份产物的行数与顺序因此保持一致。
+    invoices = ordinary_invoices(all_invoices)
+    excluded = len(all_invoices) - len(invoices)
+    if not invoices:
+        raise RuntimeError("No ordinary invoices left after excluding 大额发票")
     match_record = resolve_path(root, args.match_record)
     if not match_record.exists():
         raise RuntimeError(f"match record not found: {match_record}")
@@ -333,7 +349,7 @@ def generate(args: argparse.Namespace) -> None:
     files[SHEET_PATH] = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
     output = resolve_path(args.root.resolve(), args.output)
     write_zip(output, files)
-    print(f"wrote={output} rows={len(rows)}")
+    print(f"wrote={output} rows={len(rows)} excluded_high_value={excluded}")
 
 
 def parse_args() -> argparse.Namespace:

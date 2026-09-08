@@ -20,6 +20,7 @@ from docx.shared import Cm, Pt
 from docx.oxml.ns import qn
 
 from _pathutil import INTERNAL_DIR, add_root_arg, resolve_path
+from _invoice_filters import is_high_value
 from _matching_records import DEFAULT_MATCH_RECORD, image_paths, invoice_key, load_match_record
 
 
@@ -64,18 +65,6 @@ def index_text(indexes: list[int]) -> str:
     return "&".join(ranges)
 
 
-def is_high_unit_price(inv: dict) -> bool:
-    if "辰景" in str(inv.get("购买方名称") or ""):
-        return False
-    for item in inv.get("项目列表", []):
-        try:
-            if float(item.get("单价")) > 1000:
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False
-
-
 def auto_collect_groups_from_record(errors_path: Path, results_path: Path, match_record: Path, root: Path) -> list[dict]:
     """Read invoice_errors.json and collect payment images from 匹配记录.json."""
     root = root.resolve()
@@ -86,7 +75,8 @@ def auto_collect_groups_from_record(errors_path: Path, results_path: Path, match
     invoices_by_source = {inv["文件名"]: inv for inv in results.get("发票信息", [])}
 
     groups: list[dict] = []
-    candidates: list[list[dict]] = []
+    # (来源类别, 该组发票) —— 连号组整组保留，单张入口才剔除大额发票。
+    candidates: list[tuple[str, list[dict]]] = []
     for entry in errors.get("连号发票", []) or []:
         reason = entry.get("问题原因", "")
         if "需要额外添加支付说明与支付记录" not in reason:
@@ -94,9 +84,9 @@ def auto_collect_groups_from_record(errors_path: Path, results_path: Path, match
         items = entry.get("所有重复发票", [])
         inv_objs = [invoices_by_source[item["文件名"]] for item in items if item["文件名"] in invoices_by_source]
         if inv_objs:
-            candidates.append(inv_objs)
+            candidates.append(("连号发票", inv_objs))
 
-    grouped_files = {inv["文件名"] for group in candidates for inv in group}
+    grouped_files = {inv["文件名"] for _, group in candidates for inv in group}
     for category, entries in errors.items():
         if category == "连号发票":
             continue
@@ -106,10 +96,14 @@ def auto_collect_groups_from_record(errors_path: Path, results_path: Path, match
                 continue
             inv = invoices_by_source.get(entry.get("文件名"))
             if inv and inv["文件名"] not in grouped_files:
-                candidates.append([inv])
+                candidates.append((category, [inv]))
 
-    for inv_objs in candidates:
-        inv_objs = [inv for inv in inv_objs if not is_high_unit_price(inv)]
+    for category, inv_objs in candidates:
+        if category != "连号发票":
+            # 单张入口剔除大额发票：检查5（价税合计超1000元）不跳过它们，
+            # 但大额发票走单价大额发票汇总表，不需要支付记录。
+            # 连号组必须整组提交，因此不在组内剔除任何发票。
+            inv_objs = [inv for inv in inv_objs if not is_high_value(inv)]
         if not inv_objs:
             continue
         indexes: list[int] = []

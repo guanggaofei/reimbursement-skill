@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
+import zipfile
 from decimal import Decimal
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -14,9 +16,26 @@ SCRIPTS = REPO_ROOT / "skills" / "reimbursement" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from _pathutil import INTERNAL_DIR, resolve_path  # noqa: E402
+from _invoice_filters import (  # noqa: E402
+    high_value_invoices,
+    is_chenjing,
+    is_high_value,
+    is_material_fee,
+    is_transport_fee,
+    is_unclassified,
+    ordinary_invoices,
+)
 from apply_invoice_fixes import _check  # noqa: E402
 from apply_match_actions import ActionError, slot_counts, validate_unique_slots  # noqa: E402
+from generate_payment_explanations import warning_groups  # noqa: E402
+from generate_payment_record_docx import auto_collect_groups_from_record  # noqa: E402
 from generate_reimbursement_xlsx import build_rows, first_item_quantity  # noqa: E402
+from generate_high_value_invoices import (  # noqa: E402
+    COLUMNS,
+    build_entries,
+    summary_rows,
+    write_summary_xlsx,
+)
 from merge_output_pdfs import (  # noqa: E402
     A4_HEIGHT,
     A4_WIDTH,
@@ -29,7 +48,6 @@ from merge_output_pdfs import (  # noqa: E402
     invoice_sequence,
     render_pdf_pages,
 )
-from merge_output_pdfs import collect_pdfs, invoice_sequence  # noqa: E402
 from verify_screenshot_coverage import build_issue_summary  # noqa: E402
 
 
@@ -50,6 +68,7 @@ class PathLayoutTests(unittest.TestCase):
                 ("2_打车费", "2.pdf"),
                 ("3_高价发票", "3.pdf"),
                 ("4_辰景发票", "4.pdf"),
+                ("5_未匹配", "5.pdf"),
             ]:
                 path = output / folder / filename
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,7 +79,7 @@ class PathLayoutTests(unittest.TestCase):
 
     def test_super_invoice_output_contract_is_unchanged(self) -> None:
         source = (SCRIPTS / "super_invoice.py").read_text(encoding="utf-8")
-        for folder in ("1_材料费", "2_打车费", "3_高价发票", "4_辰景发票"):
+        for folder in ("1_材料费", "2_打车费", "3_高价发票", "4_辰景发票", "5_未匹配"):
             self.assertIn(f'"{folder}"', source)
         self.assertIn('r / "invoice_results.json"', source)
         self.assertIn('root / "invoice_results_sorted.json"', source)
@@ -125,6 +144,377 @@ class ReimbursementXlsxTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             build_rows(Path("."), invoices, {})
+
+    @patch("generate_reimbursement_xlsx.first_item_quantity", return_value=Decimal("1"))
+    def test_filtering_high_value_keeps_build_rows_from_raising(self, _quantity: unittest.mock.Mock) -> None:
+        """报账单先过滤大额发票，1000 元断言因此只是兜底而不是常规路径。"""
+        ordinary = {
+            "文件名": "material.pdf",
+            "更新后文件名": "1_material.pdf",
+            "价税合计金额": 86.7,
+            "发票号码": "111",
+            "行程单文件名": "无需",
+            "购买方名称": "浙江大学",
+            "项目列表": [{"项目名称": "螺丝", "单价": 85.84}],
+        }
+        big = {
+            "文件名": "big.pdf",
+            "更新后文件名": "2_big.pdf",
+            "价税合计金额": 5999.0,
+            "发票号码": "222",
+            "行程单文件名": "无需",
+            "购买方名称": "浙江大学",
+            "项目列表": [{"项目名称": "计算机", "单价": 5999.0}],
+        }
+
+        with self.assertRaises(RuntimeError):
+            build_rows(Path("."), [ordinary, big], {})
+
+        rows = build_rows(Path("."), ordinary_invoices([ordinary, big]), {})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["invoice_no"], "111")
+
+
+class InvoiceCategoryTests(unittest.TestCase):
+    """五类分类判定互斥且完备 —— super_invoice 与下游生成器共用同一组判定。"""
+
+    CATEGORIES = [
+        ("1_材料费", is_material_fee),
+        ("2_打车费", is_transport_fee),
+        ("3_高价发票", is_high_value),
+        ("4_辰景发票", is_chenjing),
+        ("5_未匹配", is_unclassified),
+    ]
+
+    @staticmethod
+    def _invoice(name: str, buyer: str, items: list[tuple[str, object]]) -> dict:
+        return {
+            "文件名": name,
+            "购买方名称": buyer,
+            "项目列表": [{"项目名称": item, "单价": price} for item, price in items],
+        }
+
+    def _category(self, inv: dict) -> str:
+        hits = [name for name, predicate in self.CATEGORIES if predicate(inv)]
+        self.assertEqual(len(hits), 1, f"expected exactly one category, got {hits}")
+        return hits[0]
+
+    def test_every_invoice_lands_in_exactly_one_category(self) -> None:
+        cases = [
+            ("普通材料费", self._invoice("a.pdf", "浙江大学", [("航模配件", 85.84)]), "1_材料费"),
+            # 混价发票必须走大额通道：归成材料费会被打印却没有报账单行，
+            # 导致其后所有材料费发票的纸质序号错位。
+            ("混价发票", self._invoice("b.pdf", "浙江大学", [("螺丝", 800), ("电机", 1500)]), "3_高价发票"),
+            # 阈值严格大于 1000，正好 1000 仍是材料费。
+            ("单价正好1000", self._invoice("c.pdf", "浙江大学", [("螺丝", 800), ("件", 1000)]), "1_材料费"),
+            # 人工修正 ERROR 字段时常留下引号，带引号的数字必须与裸数字同样分类。
+            ("字符串单价超额", self._invoice("d.pdf", "浙江大学", [("电机", "1500")]), "3_高价发票"),
+            ("字符串单价正常", self._invoice("e.pdf", "浙江大学", [("配件", "85.84")]), "1_材料费"),
+            ("打车费", self._invoice("打车f.pdf", "浙江大学", [("运输服务", 10.1)]), "2_打车费"),
+            ("辰景发票即使高价", self._invoice("g.pdf", "杭州辰景信息咨询有限公司", [("货运", 5999)]), "4_辰景发票"),
+            ("非辰景住宿", self._invoice("h.pdf", "浙江大学", [("住宿服务", 300)]), "5_未匹配"),
+            ("项目提取失败", self._invoice("i.pdf", "浙江大学", [("ERROR", "ERROR")]), "5_未匹配"),
+            ("单价无法解析", self._invoice("j.pdf", "浙江大学", [("配件", "ERROR")]), "5_未匹配"),
+            ("辰景提取失败", self._invoice("k.pdf", "杭州辰景信息咨询有限公司", [("ERROR", "ERROR")]), "4_辰景发票"),
+        ]
+        for label, invoice, expected in cases:
+            with self.subTest(label):
+                self.assertEqual(self._category(invoice), expected)
+
+    def test_mixed_price_invoice_leaves_the_ordinary_flow(self) -> None:
+        mixed = self._invoice("b.pdf", "浙江大学", [("螺丝", 800), ("电机", 1500)])
+        material = self._invoice("a.pdf", "浙江大学", [("航模配件", 85.84)])
+
+        self.assertEqual(ordinary_invoices([material, mixed]), [material])
+        self.assertEqual(high_value_invoices([material, mixed]), [mixed])
+
+    def test_super_invoice_uses_the_shared_predicates(self) -> None:
+        """分类必须 import 共用判定，不得重新实现，否则两套判据会再次漂移。"""
+        source = (SCRIPTS / "super_invoice.py").read_text(encoding="utf-8")
+        self.assertIn("from _invoice_filters import", source)
+        for name in ("is_material_fee", "is_transport_fee", "is_high_value", "is_unclassified"):
+            self.assertNotIn(f"def {name}(", source)
+
+
+class InvoiceFilterTests(unittest.TestCase):
+    """大额发票离开普通流程，辰景发票留在普通流程。"""
+
+    @staticmethod
+    def _invoice(name: str, buyer: str, prices: list) -> dict:
+        return {
+            "文件名": name,
+            "购买方名称": buyer,
+            "项目列表": [{"项目名称": "件", "单价": price} for price in prices],
+        }
+
+    def test_high_value_excludes_chenjing_and_keeps_ordinary(self) -> None:
+        material = self._invoice("material.pdf", "浙江大学", [85.84])
+        big = self._invoice("big.pdf", "浙江大学", [5999.0])
+        chenjing = self._invoice("chenjing.pdf", "杭州辰景信息咨询有限公司", [5999.0])
+
+        self.assertFalse(is_high_value(material))
+        self.assertTrue(is_high_value(big))
+        # 辰景发票即使单价超过 1000 也不算大额发票，它走自己的电子发票通道。
+        self.assertFalse(is_high_value(chenjing))
+
+        invoices = [material, big, chenjing]
+        self.assertEqual(
+            [inv["文件名"] for inv in ordinary_invoices(invoices)],
+            ["material.pdf", "chenjing.pdf"],
+        )
+        self.assertEqual([inv["文件名"] for inv in high_value_invoices(invoices)], ["big.pdf"])
+
+    def test_unparseable_unit_price_is_not_high_value(self) -> None:
+        for price in ("ERROR", None, ""):
+            with self.subTest(price=price):
+                self.assertFalse(is_high_value(self._invoice("x.pdf", "浙江大学", [price])))
+
+    def test_threshold_is_strictly_greater_than_1000(self) -> None:
+        self.assertFalse(is_high_value(self._invoice("x.pdf", "浙江大学", [1000.0])))
+        self.assertTrue(is_high_value(self._invoice("x.pdf", "浙江大学", [1000.01])))
+
+
+class HighValueInvoiceTests(unittest.TestCase):
+    SORTED_JSON = {
+        "发票信息": [
+            {
+                "文件名": "material.pdf",
+                "更新后文件名": "1_价税合计_86_70_发票.pdf",
+                "购买方名称": "浙江大学",
+                "发票号码": "111",
+                "价税合计金额": 86.7,
+                "行程单文件名": "无需",
+                "项目列表": [{"项目名称": "航模配件", "单价": 85.84}],
+            },
+            {
+                "文件名": "big.pdf",
+                "更新后文件名": "2_价税合计_5999_00_发票.pdf",
+                "购买方名称": "浙江大学",
+                "发票号码": "222",
+                "价税合计金额": 5999.0,
+                "行程单文件名": "无需",
+                "项目列表": [{"项目名称": "计算机", "单价": 5999.0}],
+            },
+        ]
+    }
+
+    def _project(self, root: Path, bills: list[str], payments: list[str]) -> tuple[Path, Path]:
+        (root / "invoices").mkdir()
+        (root / "images").mkdir()
+        for name in ("material.pdf", "big.pdf"):
+            (root / "invoices" / name).write_bytes(b"%PDF-1.4\n")
+        for name in bills + payments:
+            (root / "images" / name).write_bytes(b"\x89PNG\r\n")
+
+        sorted_json = root / "invoice_results_sorted.json"
+        sorted_json.write_text(json.dumps(self.SORTED_JSON, ensure_ascii=False), encoding="utf-8")
+
+        match_record = root / "匹配记录.json"
+        match_record.write_text(
+            json.dumps(
+                {
+                    "版本": 2,
+                    "发票映射": {
+                        "invoices/big.pdf": {
+                            "发票文件": "invoices/big.pdf",
+                            "支付记录": [f"images/{name}" for name in payments],
+                            "账单截图": [f"images/{name}" for name in bills],
+                            "行程明细": [],
+                            "购买日期": "2026-04-01",
+                        }
+                    },
+                    "未匹配截图": [],
+                    "忽略截图": [],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return sorted_json, match_record
+
+    def test_single_screenshot_gets_no_index_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sorted_json, match_record = self._project(root, ["b.png"], ["p.png"])
+            output_dir = root / "大额发票"
+
+            entries = build_entries(root, sorted_json, match_record, output_dir)
+
+            self.assertEqual([entry["源文件"] for entry in entries], ["big.pdf"])
+            self.assertEqual(entries[0]["订单截图"], ["xxx_5999.00_大额发票_订单截图.png"])
+            self.assertEqual(entries[0]["支付记录"], ["xxx_5999.00_大额发票_支付记录.png"])
+            self.assertEqual(entries[0]["单价"], "5999.00")
+            self.assertEqual(entries[0]["备注"], [])
+            self.assertTrue((output_dir / "xxx_5999.00_大额发票.pdf").exists())
+
+    def test_multiple_screenshots_get_index_suffixes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sorted_json, match_record = self._project(root, ["b1.png", "b2.png"], ["p.png"])
+
+            entries = build_entries(root, sorted_json, match_record, root / "大额发票")
+
+            self.assertEqual(
+                entries[0]["订单截图"],
+                ["xxx_5999.00_大额发票_订单截图_1.png", "xxx_5999.00_大额发票_订单截图_2.png"],
+            )
+            cell = summary_rows(entries)[1][COLUMNS.index("订单截图")]
+            self.assertEqual(
+                cell,
+                "xxx_5999.00_大额发票_订单截图_1.png、xxx_5999.00_大额发票_订单截图_2.png",
+            )
+
+    def test_missing_screenshots_are_reported_not_fatal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sorted_json, match_record = self._project(root, ["b.png"], [])
+
+            entries = build_entries(root, sorted_json, match_record, root / "大额发票")
+
+            self.assertEqual(entries[0]["支付记录"], [])
+            self.assertIn("缺少支付记录", entries[0]["备注"])
+            self.assertEqual(summary_rows(entries)[1][COLUMNS.index("支付记录")], "缺失")
+
+    def test_summary_row_matches_feishu_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sorted_json, match_record = self._project(root, ["b.png"], ["p.png"])
+            entries = build_entries(root, sorted_json, match_record, root / "大额发票")
+
+            rows = summary_rows(entries)
+
+            self.assertEqual(rows[0], COLUMNS)
+            row = dict(zip(COLUMNS, rows[1]))
+            self.assertEqual(row["姓名"], "xxx")
+            # 大额发票不进报账单，编号恒为「无」。
+            self.assertEqual(row["报账单编号（若无）"], "无")
+            self.assertEqual(row["支付金额"], "5999.00")
+            self.assertEqual(row["发票号码"], "222")
+            self.assertEqual(row["处理反馈"], "")
+
+    def test_summary_xlsx_is_a_readable_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "单价大额发票汇总表.xlsx"
+            write_summary_xlsx(output, [COLUMNS, ["xxx"] * len(COLUMNS)])
+
+            with zipfile.ZipFile(output) as archive:
+                self.assertIsNone(archive.testzip())
+                names = archive.namelist()
+                sheet = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+
+            self.assertIn("[Content_Types].xml", names)
+            self.assertIn("xl/workbook.xml", names)
+            self.assertIn("姓名", sheet)
+
+    def test_nothing_is_written_without_high_value_invoices(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sorted_json, match_record = self._project(root, ["b.png"], ["p.png"])
+            only_material = {"发票信息": [self.SORTED_JSON["发票信息"][0]]}
+            sorted_json.write_text(json.dumps(only_material, ensure_ascii=False), encoding="utf-8")
+            output_dir = root / "大额发票"
+
+            self.assertEqual(build_entries(root, sorted_json, match_record, output_dir), [])
+            self.assertFalse(output_dir.exists())
+
+
+class PaymentMaterialGroupingTests(unittest.TestCase):
+    """连号组整组提交；单张入口剔除大额发票。两个生成器必须给出一致的分组。"""
+
+    MATERIAL = {
+        "文件名": "a.pdf",
+        "更新后文件名": "1_a.pdf",
+        "购买方名称": "浙江大学",
+        "行程单文件名": "无需",
+        "价税合计金额": 1200.0,
+        "项目列表": [{"项目名称": "螺丝", "单价": 600.0}],
+    }
+    BIG = {
+        "文件名": "b.pdf",
+        "更新后文件名": "3_b.pdf",
+        "购买方名称": "浙江大学",
+        "行程单文件名": "无需",
+        "价税合计金额": 5999.0,
+        "项目列表": [{"项目名称": "电机", "单价": 5999.0}],
+    }
+
+    def _errors(self, category: str) -> dict:
+        if category == "连号发票":
+            return {
+                "连号发票": [{
+                    "重复组信息": "2026-03-20 | 某商家",
+                    "重复发票总数": 2,
+                    "所有重复发票": [
+                        {"发票序号": 0, "文件名": "a.pdf"},
+                        {"发票序号": 1, "文件名": "b.pdf"},
+                    ],
+                    "问题原因": "共 2 张发票为同一时间且同一销售方, 需要额外添加支付说明与支付记录",
+                }]
+            }
+        return {
+            "价税合计超1000元": [{
+                "发票序号": 1,
+                "文件名": "b.pdf",
+                "问题原因": "价税合计 5999.0 元超过 1000.0 元，需要提交支付说明与支付记录",
+            }]
+        }
+
+    def test_serial_group_keeps_every_invoice(self) -> None:
+        """连号组里的每一张都要有支付说明和支付记录，不得在组内剔除。"""
+        errors = self._errors("连号发票")
+        by_source = {"a.pdf": self.MATERIAL, "b.pdf": self.BIG}
+
+        groups = warning_groups(errors, by_source)
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual([inv["文件名"] for inv in groups[0]["invoices"]], ["a.pdf", "b.pdf"])
+
+    def test_single_entry_high_value_is_excluded(self) -> None:
+        """大额发票走单价大额发票汇总表，单张入口不生成支付说明。"""
+        groups = warning_groups(self._errors("价税合计超1000元"), {"b.pdf": self.BIG})
+
+        self.assertEqual(groups, [])
+
+    def test_both_generators_agree_on_the_same_group(self) -> None:
+        """支付说明与支付记录必须同进同出，否则会出现有记录没说明的组。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "images").mkdir()
+            for name in ("pa.png", "pb.png"):
+                (root / "images" / name).write_bytes(b"\x89PNG\r\n")
+
+            errors_path = root / "invoice_errors.json"
+            errors_path.write_text(json.dumps(self._errors("连号发票"), ensure_ascii=False), encoding="utf-8")
+            results_path = root / "invoice_results_sorted.json"
+            results_path.write_text(
+                json.dumps({"发票信息": [self.MATERIAL, self.BIG]}, ensure_ascii=False), encoding="utf-8"
+            )
+            match_path = root / "匹配记录.json"
+            match_path.write_text(
+                json.dumps({
+                    "版本": 2,
+                    "发票映射": {
+                        "invoices/a.pdf": {"发票文件": "invoices/a.pdf", "支付记录": ["images/pa.png"],
+                                           "账单截图": [], "行程明细": [], "购买日期": ""},
+                        "invoices/b.pdf": {"发票文件": "invoices/b.pdf", "支付记录": ["images/pb.png"],
+                                           "账单截图": [], "行程明细": [], "购买日期": ""},
+                    },
+                    "未匹配截图": [],
+                    "忽略截图": [],
+                }, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            record_groups = auto_collect_groups_from_record(errors_path, results_path, match_path, root)
+            explanation_groups = warning_groups(
+                json.loads(errors_path.read_text(encoding="utf-8")),
+                {"a.pdf": self.MATERIAL, "b.pdf": self.BIG},
+            )
+
+            self.assertEqual(len(record_groups), len(explanation_groups))
+            # 支付记录组收齐了两张发票的截图，说明组内没有发票被丢掉。
+            self.assertEqual(len(record_groups[0]["images"]), 2)
 
 
 class InvoiceFixPathTests(unittest.TestCase):

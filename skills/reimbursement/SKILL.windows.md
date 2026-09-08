@@ -32,7 +32,7 @@ description: "Trigger when the user indicates they are executing the reimburseme
 
 ## 文件布局
 
-根目录保存 `invoices/`、`images/`、`output/`、三个发票 JSON、`OCR缓存.json`、`匹配记录.json`、历史报账单、`支出记录OCR整理结果.md`、`待审核截图/`、两份最终 Office 文件、可选支付说明报告和合并 PDF。
+根目录保存 `invoices/`、`images/`、`output/`、三个发票 JSON、`OCR缓存.json`、`匹配记录.json`、历史报账单、`支出记录OCR整理结果.md`、`待审核截图/`、两份最终 Office 文件、可选支付说明报告、存在大额发票时的 `大额发票/`、`单价大额发票汇总表.xlsx`、`大额发票生成结果.md`，以及合并 PDF。
 
 `报销工作文件/` 保存 `invoice_errors_raw.json`、`invoice_fixes.json`、`行程单数据.json`、`截图问题统计.json`、OCR 匹配明细、DOCX 技术报告、action JSON、未打包的支付材料和解包/XML 调试文件。
 
@@ -43,9 +43,9 @@ description: "Trigger when the user indicates they are executing the reimburseme
 保留原始输入、`OCR缓存.json`、`匹配记录.json`、历史报账单和 skill 文件：
 
 ```powershell
-Remove-Item -Recurse -Force output, 报销工作文件, 待审核截图 -ErrorAction SilentlyContinue
-Remove-Item -Force invoice_results.json, invoice_results_sorted.json, invoice_errors.json, 支出记录OCR整理结果.md, 支付说明生成结果.md -ErrorAction SilentlyContinue
-Remove-Item -Force 'Hello World 2026报账单填写结果.xlsx', 'Hello World 2026支出记录填写结果.docx', 支付说明与支付记录.zip, 辰景发票.zip, 合并发票_纵向居中.pdf -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force output, 报销工作文件, 待审核截图, 大额发票 -ErrorAction SilentlyContinue
+Remove-Item -Force invoice_results.json, invoice_results_sorted.json, invoice_errors.json, 支出记录OCR整理结果.md, 支付说明生成结果.md, 大额发票生成结果.md -ErrorAction SilentlyContinue
+Remove-Item -Force 'Hello World 2026报账单填写结果.xlsx', 'Hello World 2026支出记录填写结果.docx', 单价大额发票汇总表.xlsx, 合并发票_纵向居中.pdf -ErrorAction SilentlyContinue
 ```
 
 ### 2. 输入、提取与修复
@@ -64,6 +64,8 @@ Remove-Item -Force 'Hello World 2026报账单填写结果.xlsx', 'Hello World 20
 ```
 
 最多修复 3 轮；错误数不下降或字段无法可靠确定时停止。历史报账单存在时运行 `cross_batch_dedup.py --root .`，再重新生成最终 `invoice_results_sorted.json`、`invoice_errors.json` 和 `output/`。
+
+`invoice_errors.json` 中的 `未匹配分类` 是业务判定结果，不属于字段级错误，`@fix-invoice-errors` 修不了它。该类发票归入 `output/5_未匹配/`，仍进报账单和支出记录，但需向用户逐张列出以确认报销通道。
 
 ### 3. 行程、OCR 与匹配
 
@@ -110,11 +112,20 @@ Set-Location -LiteralPath 'C:\实际的项目根目录'; & .\.venv\Scripts\pytho
 .\.venv\Scripts\python.exe .opencode\skills\reimbursement\scripts\generate_payment_record_docx.py --root .
 .\.venv\Scripts\python.exe .opencode\skills\reimbursement\scripts\generate_payment_explanations.py --root . --date YYYY-M-D
 .\.venv\Scripts\python.exe .opencode\skills\reimbursement\scripts\generate_reimbursement_xlsx.py --root .
+.\.venv\Scripts\python.exe .opencode\skills\reimbursement\scripts\generate_high_value_invoices.py --root .
 ```
 
 最终 DOCX/XLSX 和需要保留的支付说明报告位于根目录；支付记录、支付说明、DOCX 技术报告及解包调试文件位于 `报销工作文件/`。
 
-报账单的“数量”和“单价”按以下规则填写：从原发票 PDF 读取第一条项目的数量；数量为非整数时取 `int`，数量栏为空时填 `1`；单价填写“价税合计金额 ÷ 处理后的数量”。处理后的数量必须大于 0，单价不得超过 1000 元，否则停止并报告。
+发票分类决定去向，五类互不重叠且覆盖全部发票：
+
+- **材料费**（所有单价≤1000 元）走完整的线上线下流程。
+- **打车费**照常，发票与行程单一并提交。
+- **大额发票**（存在单价>1000 元、购买方不含辰景）按设备费走单价大额发票汇总表，不进报账单、支出记录、合并 PDF、支付说明和支付记录。`generate_high_value_invoices.py` 在存在此类发票时生成 `大额发票/`、`单价大额发票汇总表.xlsx` 和 `大额发票生成结果.md`；不存在时不产生任何文件。混价发票（部分项目超 1000）整张按大额处理。
+- **辰景发票**（购买方含辰景）照常进报账单和支出记录，但不线下打印，需另行提交电子发票。
+- **未匹配发票**归入 `output/5_未匹配/`，仍进报账单和支出记录，但需向用户逐张列出待确认。
+
+报账单的“数量”和“单价”按以下规则填写：从原发票 PDF 读取第一条项目的数量；数量为非整数时取 `int`，数量栏为空时填 `1`；单价填写“价税合计金额 ÷ 处理后的数量”。处理后的数量必须大于 0。大额发票已由分类过滤排除在报账单与支出记录之外，`build_rows` 中的 1000 元上限仅作兜底断言；一旦触发说明分类判定与此处推算的单价不一致，停止并报告。
 
 上述 DOCX 与 XLSX 命令完成后、进入步骤 5 前，必须立即读取最新的 `支出记录OCR整理结果.md` 和 `匹配记录.json`，向用户告知截图匹配缺口：
 
@@ -122,6 +133,8 @@ Set-Location -LiteralPath 'C:\实际的项目根目录'; & .\.venv\Scripts\pytho
 - 打车发票必须精确到行程序号，并列出该行程缺少的截图位置。
 - 对每个缺失位置，列出 `匹配记录.json` 中原因明确指向该发票或行程的候选截图原路径，如 `images/IMG_1234.png`；没有可靠候选时明确写“未找到候选截图”，不得仅凭相同金额猜测。
 - 另列出仍在 `未匹配截图[]` 中的每张截图原路径和原因，确保用户能精确定位需要核对的图片。
+- 存在大额发票时，读取 `大额发票生成结果.md` 的“待处理问题”表，逐张列出缺少订单截图或支付记录的大额发票。
+- 存在 `invoice_errors.json` 的 `未匹配分类` 条目时，逐张列出发票文件名和问题原因，请用户确认报销通道。
 - 即使没有缺口，也要明确告知“所有发票截图已完整匹配”。该告知是进度通知，不中断后续合并流程，除非用户要求暂停。
 
 ### 5. 合并 PDF
@@ -130,8 +143,12 @@ Set-Location -LiteralPath 'C:\实际的项目根目录'; & .\.venv\Scripts\pytho
 .\.venv\Scripts\python.exe .opencode\skills\reimbursement\scripts\merge_output_pdfs.py --root .
 ```
 
-命令完成后，提示用户检查 `报销工作文件/支付记录/` 和 `报销工作文件/支付说明/` 中的 DOCX，将文件名及文档内容里的 `xxx` 改为自己的姓名。
+命令完成后，提示用户完成以下收尾操作：
+
+- 检查 `报销工作文件/支付记录/` 和 `报销工作文件/支付说明/` 中的 DOCX，将文件名及文档内容里的 `xxx` 改为自己的姓名。
+- 存在大额发票时：将 `大额发票/` 中文件名里的 `xxx` 改为自己的姓名，按 `单价大额发票汇总表.xlsx` 填写飞书上的「单价大额发票汇总表」并上传对应文件。这类发票不参与线上线下普通流程，也不需要线下打印。
+- 存在辰景发票时：`output/4_辰景发票/` 中的发票需自行改名压缩后作为电子发票单独提交，不线下打印；这类发票本身已包含在报账单和支出记录中。
 
 ### 6. 验证
 
-确认最终 DOCX/XLSX 可作为 ZIP 打开。确认报账单中每行数量和单价已填写、数量为正数、单价不超过 1000 元，且数量乘单价与发票金额在允许精度内一致。确认合并 PDF 可正常打开且页面内容完整。确认 `super_invoice.py` 输出名称不变，内部文件均进入 `报销工作文件/`。不自动创建任何 ZIP。
+确认最终 DOCX/XLSX 可作为 ZIP 打开。确认报账单与支出记录的发票行数一致且均不含大额发票。确认报账单中每行数量和单价已填写、数量为正数、单价不超过 1000 元，且数量乘单价与发票金额在允许精度内一致。存在大额发票时，确认 `大额发票/` 中每张大额发票至少有对应的 PDF，且 `单价大额发票汇总表.xlsx` 可作为 ZIP 打开、行数与大额发票张数一致。确认合并 PDF 可正常打开且页面内容完整。确认 `super_invoice.py` 的五类输出目录（`1_材料费`、`2_打车费`、`3_高价发票`、`4_辰景发票`、`5_未匹配`）和输出名称不变，内部文件均进入 `报销工作文件/`。不自动创建任何 ZIP。

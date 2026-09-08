@@ -15,6 +15,7 @@ from lxml import etree
 from PIL import Image
 
 from _pathutil import INTERNAL_DIR, add_root_arg, resolve_path
+from _invoice_filters import ordinary_invoices as filter_ordinary_invoices
 from _matching_records import DEFAULT_MATCH_RECORD, image_paths, invoice_images, invoice_key, load_match_record
 
 
@@ -67,23 +68,12 @@ def write_zip(path: Path, files: dict[str, bytes]) -> None:
 
 
 def ordinary_invoices(invoice_json: Path) -> list[dict]:
+    """走普通线上流程的发票：排除大额发票，保留辰景发票。"""
     data = json.loads(invoice_json.read_text(encoding="utf-8"))
     invoices = data.get("发票信息", [])
     if not isinstance(invoices, list) or not invoices:
         raise RuntimeError(f"no invoice list found in {invoice_json}")
-    result = []
-    for inv in invoices:
-        if "辰景" not in str(inv.get("购买方名称") or ""):
-            high_price = False
-            for item in inv.get("项目列表") or []:
-                try:
-                    high_price = high_price or float(item.get("单价")) > 1000
-                except (TypeError, ValueError):
-                    pass
-            if high_price:
-                continue
-        result.append(inv)
-    return result
+    return filter_ordinary_invoices(invoices)
 
 
 def invoice_count(invoice_json: Path) -> int:
@@ -327,7 +317,6 @@ def generate(args: argparse.Namespace) -> None:
     table = find_table(doc_root)
     rows = table_rows(table)
 
-    header = rows[0]
     filled_rows = [row for row in rows[1:] if has_images(row)]
     row_template = (
         filled_rows[1]

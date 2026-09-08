@@ -23,6 +23,7 @@ from xml.dom import minidom
 from xml.sax.saxutils import escape
 
 from _pathutil import INTERNAL_DIR, add_root_arg, resolve_path
+from _invoice_filters import is_high_value
 from _matching_records import DEFAULT_MATCH_RECORD, invoice_key, load_match_record
 
 
@@ -352,22 +353,13 @@ def make_docx(
 def warning_groups(errors: dict[str, Any], invoices_by_source: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     groups: list[dict[str, Any]] = []
 
-    def ordinary_invoice(inv: dict[str, Any]) -> bool:
-        if "辰景" in str(inv.get("购买方名称") or ""):
-            return True
-        for line in inv.get("项目列表") or []:
-            try:
-                if money(line.get("单价")) > Decimal("1000"):
-                    return False
-            except Exception:
-                continue
-        return True
-
+    # 连号组必须整组提交，每一张都要有支付说明和支付记录，因此不在组内剔除任何发票。
+    # 大额发票本来也进不了连号组：super_invoice 的连号检查会跳过它们。
     for group in errors.get("连号发票", []) or []:
         invoices = [invoices_by_source[item["文件名"]] for item in group.get("所有重复发票", [])]
         if not invoices:
             continue
-        if any(inv.get("行程单文件名") != "无需" for inv in invoices) or not all(ordinary_invoice(inv) for inv in invoices):
+        if any(inv.get("行程单文件名") != "无需" for inv in invoices):
             continue
         display_indexes = [invoice_display_index(inv) for inv in invoices]
         groups.append({"kind": "连号发票", "invoices": invoices, "indexes": display_indexes})
@@ -384,7 +376,9 @@ def warning_groups(errors: dict[str, Any], invoices_by_source: dict[str, dict[st
             if filename not in invoices_by_source or filename in grouped_files:
                 continue
             inv = invoices_by_source[filename]
-            if inv.get("行程单文件名") != "无需" or not ordinary_invoice(inv):
+            # 单张入口要剔除大额发票：检查5（价税合计超1000元）不跳过它们，
+            # 但大额发票走单价大额发票汇总表，不需要支付说明与支付记录。
+            if inv.get("行程单文件名") != "无需" or is_high_value(inv):
                 continue
             groups.append({"kind": category, "invoices": [inv], "indexes": [invoice_display_index(inv)]})
 

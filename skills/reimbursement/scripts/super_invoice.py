@@ -9,6 +9,15 @@ from typing import List, Dict, Optional, Any, Tuple, Set
 from pypinyin import lazy_pinyin
 
 from _pathutil import add_root_arg, resolve_path
+from _invoice_filters import (
+    HIGH_VALUE_THRESHOLD,
+    is_chenjing,
+    is_high_value,
+    is_material_fee,
+    is_transport_fee,
+    is_unclassified,
+    parse_amount,
+)
 
 r"""
 super_invoice — invoice extraction, dedup, sorting, and PDF classification.
@@ -67,75 +76,10 @@ def compact_whitespace(value: Any) -> str:
     """Remove OCR-inserted whitespace before comparing identifiers."""
     return re.sub(r"\s+", "", str(value or ""))
 
-def is_transport_fee(invoice: Dict) -> bool:
-    """判断是否为打车费：发票名称含打车 or 项目名含运输"""
-    file_name = invoice.get("文件名", "").lower()
-    if "打车" in file_name or "出租" in file_name:
-        return True
-
-    items = invoice.get("项目列表", [])
-    if not items or items[0]["项目名称"] == "ERROR":
-        return False
-    
-    # 检查是否有项目含"运输"关键词
-    for item in items:
-        item_name = item.get("项目名称", "").lower()
-        if "运输" not in item_name and "订车" not in item_name:
-            return False
-    return True
-
-def is_material_fee(invoice: Dict) -> bool:
-    """判断是否为材料费：项目名不含住宿/运输 + 存在单价≤1000元的项目"""
-
-    # 排除打车费发票
-    if is_transport_fee(invoice):
-        return False
-    
-    items = invoice.get("项目列表", [])
-    if not items or items[0]["项目名称"] == "ERROR":
-        return False
-    
-    # 检查所有项目：不含住宿/运输，且至少一个项目单价≤1000元
-    has_valid_item = False
-    for item in items:
-        item_name = item.get("项目名称", "").lower()
-        # 排除住宿/运输项目
-        if "住宿" in item_name:
-            return False
-        
-        # 检查单价（有效且≤1000元）
-        price = item.get("单价", "ERROR")
-        if price != "ERROR" and isinstance(price, (int, float)) and price <= 1000:
-            has_valid_item = True
-    
-    return has_valid_item
-
-
-
-
-def is_high_price_non_chenjing(invoice: Dict) -> bool:
-    """判断是否为高价非辰景发票：存在单价>1000元的项目 + 购买方不含辰景"""
-    # 先判断购买方是否非辰景
-    buyer_name = invoice.get("购买方名称", "").lower()
-    if "辰景" in buyer_name:
-        return False
-    
-    # 再判断是否有单价>1000元的项目
-    items = invoice.get("项目列表", [])
-    if not items or items[0]["项目名称"] == "ERROR":
-        return False
-    
-    for item in items:
-        price = item.get("单价", "ERROR")
-        if price != "ERROR" and isinstance(price, (int, float)) and price >= 1000:
-            return True
-    return False
-
-
-def is_chenjing(invoice: Dict) -> bool:
-    """判断是否为辰景发票：购买方名称含辰景"""
-    buyer_name = invoice.get("购买方名称", "").lower()
-    return "辰景" in buyer_name
+# 发票分类判定（is_material_fee / is_transport_fee / is_high_value / is_chenjing /
+# is_unclassified）统一定义在 _invoice_filters.py。分类决定发票进哪个 output/ 子目录、
+# 拿到哪个全局序号，下游生成器用同一组判定决定它进不进报账单和合并 PDF；两边必须同源，
+# 否则会出现「被打印却没有报账单行」的序号错位。
 
 def extract_buyer_seller_names(text_lines_clean: List[str], full_text: str) -> Dict[str, str]:
     """提取购买方和销售方名称"""
@@ -651,10 +595,11 @@ def sort_invoices(invoice_list: List[Dict], root: Optional[Path] = None, source_
     """
     按需求排序发票并分类处理：
     1. 分类顺序：
-       - 类别1：单价≤1000元的材料费（项目名不含住宿/运输）
+       - 类别1：所有单价≤1000元的材料费（项目名不含住宿/运输）
        - 类别2：打车费发票（项目名含运输）
-       - 类别3：单价>1000元且购买方不含辰景的发票
+       - 类别3：存在单价>1000元且购买方不含辰景的发票
        - 类别4：购买方为辰景的发票
+       - 类别5：以上都不匹配，需人工确认报销通道
     2. 分类内排序：开票时间升序 → 销售方名称拼音升序
     3. 分类处理：创建对应文件夹，复制发票并更新文件名，同步到JSON
     """
@@ -667,24 +612,32 @@ def sort_invoices(invoice_list: List[Dict], root: Optional[Path] = None, source_
     # 分类配置：(类别名称, 类别判断函数, 文件夹名)
     categories = [
         (
-            "材料费(单价≤1000元)",
-            lambda inv: is_material_fee(inv),  # 自定义材料费判断函数
+            "材料费(所有单价≤1000元)",
+            is_material_fee,
             "1_材料费"
         ),
         (
             "打车费(含运输)",
-            lambda inv: is_transport_fee(inv),  # 自定义打车费判断函数
+            is_transport_fee,
             "2_打车费"
         ),
         (
             "高价发票(单价>1000元_非辰景)",
-            lambda inv: is_high_price_non_chenjing(inv),  # 自定义高价非辰景判断函数
+            is_high_value,
             "3_高价发票"
         ),
         (
             "辰景发票",
-            lambda inv: is_chenjing(inv),  # 自定义辰景判断函数
+            is_chenjing,
             "4_辰景发票"
+        ),
+        (
+            # is_unclassified 是前四类的补集，因此每张发票恰好命中一类。
+            # 未匹配发票单独成类而不再并入辰景：它们的购买方并不含「辰景」，
+            # 混进辰景块会让后续检查跳过条件失效，也会把辰景的全局序号推后。
+            "未匹配分类",
+            is_unclassified,
+            "5_未匹配"
         )
     ]
 
@@ -705,9 +658,9 @@ def sort_invoices(invoice_list: List[Dict], root: Optional[Path] = None, source_
                 categorized_invoices[folder_name].append(invoice)
                 break
         else:
-            # 无匹配类别时，放入辰景文件夹（兜底处理）
-            categorized_invoices["4_辰景发票"].append(invoice)
-            print(f"{Colors.YELLOW}[WARNING]{Colors.RESET} 发票{invoice['发票序号']}_{invoice['文件名']}无匹配分类，已放入辰景文件夹")
+            # 防御性断言：is_unclassified 是前四类的补集，正常情况下走不到这里。
+            categorized_invoices["5_未匹配"].append(invoice)
+            print(f"{Colors.RED}[ERROR]{Colors.RESET} 发票{invoice['发票序号']}_{invoice['文件名']}未命中任何分类判定，分类判定集不完备，已放入5_未匹配")
 
     # -------------------------- 3. 分类内排序与重命名 --------------------------
     sorted_all = []  # 最终合并的排序结果
@@ -822,7 +775,8 @@ def check_invoice_errors(sorted_invoices: List[Dict], allowed_buyers: List[Dict]
         "项目单价超1000元": [],
         "价税合计超1000元": [],
         "连号发票": [],
-        "打车发票缺少行程单": []
+        "打车发票缺少行程单": [],
+        "未匹配分类": []
     }
 
     # -------------------------- 检查1：抬头和税号是否匹配允许列表 --------------------------
@@ -890,7 +844,7 @@ def check_invoice_errors(sorted_invoices: List[Dict], allowed_buyers: List[Dict]
                     break  # 同一项目包含多个敏感词时，只记录一次
 
     # -------------------------- 检查4：项目单价超1000元 --------------------------
-    max_price = 1000.0
+    max_price = float(HIGH_VALUE_THRESHOLD)
     for invoice in sorted_invoices:
 
         # 辰景发票不检查单价
@@ -901,10 +855,12 @@ def check_invoice_errors(sorted_invoices: List[Dict], allowed_buyers: List[Dict]
         # 跳过提取问题的情况
         if items[0]["单价"] == "ERROR":
             continue
-        # 检查每个项目单价
+        # 检查每个项目单价。用 Decimal 解析而非直接比较：人工修正 ERROR 字段时
+        # 常把数字写成带引号的字符串，字符串与 float 直接比较会抛 TypeError 导致闪退。
         for item in items:
             price = item["单价"]
-            if price != "ERROR" and price > max_price:
+            parsed = parse_amount(price)
+            if parsed is not None and parsed > HIGH_VALUE_THRESHOLD:
                 errors["项目单价超1000元"].append({
                     "发票序号": invoice["发票序号"],
                     "文件名": invoice["文件名"],
@@ -914,7 +870,7 @@ def check_invoice_errors(sorted_invoices: List[Dict], allowed_buyers: List[Dict]
                 })
 
     # -------------------------- 检查5：价税合计超1000元 --------------------------
-    max_total = 1000.0
+    max_total = float(HIGH_VALUE_THRESHOLD)
     for invoice in sorted_invoices:
 
         # 辰景发票不检查价税合计
@@ -925,7 +881,8 @@ def check_invoice_errors(sorted_invoices: List[Dict], allowed_buyers: List[Dict]
         # 跳过提取问题的情况
         if total == "ERROR":
             continue
-        if total > max_total:
+        parsed_total = parse_amount(total)
+        if parsed_total is not None and parsed_total > HIGH_VALUE_THRESHOLD:
             errors["价税合计超1000元"].append({
                 "发票序号": invoice["发票序号"],
                 "文件名": invoice["文件名"],
@@ -949,7 +906,7 @@ def check_invoice_errors(sorted_invoices: List[Dict], allowed_buyers: List[Dict]
             continue
 
         # 单价超1000元非辰景发票不检查连号
-        if is_high_price_non_chenjing(invoice):
+        if is_high_value(invoice):
             continue
         
         try:
@@ -999,7 +956,7 @@ def check_invoice_errors(sorted_invoices: List[Dict], allowed_buyers: List[Dict]
             })
 
 
-    # -------------------------- 检查6：打车发票缺少行程单 --------------------------
+    # -------------------------- 检查7：打车发票缺少行程单 --------------------------
     for invoice in sorted_invoices:
         if is_transport_fee(invoice):
             trip_filename = invoice.get("行程单文件名", "")
@@ -1009,6 +966,18 @@ def check_invoice_errors(sorted_invoices: List[Dict], allowed_buyers: List[Dict]
                     "文件名": invoice["文件名"],
                     "问题原因": "打车发票缺少匹配的行程单文件"
                 })
+
+    # -------------------------- 检查8：未匹配任何分类 --------------------------
+    # 这类发票归入 output/5_未匹配/，通常源于项目提取失败、非辰景的住宿发票，
+    # 或所有单价都无法解析。问题原因不含「支付说明」+「支付记录」组合，
+    # 以免被支付材料生成脚本误认为需要生成支付说明与支付记录的条目。
+    for invoice in sorted_invoices:
+        if is_unclassified(invoice):
+            errors["未匹配分类"].append({
+                "发票序号": invoice["发票序号"],
+                "文件名": invoice["文件名"],
+                "问题原因": "无法匹配任何发票类别，需人工确认该发票的报销通道"
+            })
 
     # -------------------------- 输出错误汇总 --------------------------
     print("\n" + "="*80)
