@@ -1,5 +1,12 @@
 # 报销材料自动整理 Skill
 
+> 当前版本：Claude Code。Codex 主版本请切换到 `codex`；opencode 版本请切换到 `opencode`。
+>
+> 三个版本分支：[Codex（主分支）](https://github.com/guanggaofei/reimbursement-opencode-skill/tree/codex) · [opencode](https://github.com/guanggaofei/reimbursement-opencode-skill/tree/opencode) · [Claude Code](https://github.com/guanggaofei/reimbursement-opencode-skill/tree/claude-code)。
+>
+> 请使用下方「Claude Code 版本」安装命令。此版本支持 Linux/macOS；Windows 用户可选用 Codex 或 opencode 的 Windows 入口。
+
+
 本仓库提供 Linux/macOS 与 Windows 两套 opencode 入口，用于自动整理发票 PDF、行程单和费用截图，并生成报账单、支出记录与合并 PDF。支付材料保留原始占位名称，由用户填写姓名后自行压缩。
 
 ## 安装
@@ -16,7 +23,7 @@
 - Agent 获取本仓库时，必须将 Git 仓库克隆到 `/tmp/reimbursement-opencode-skill`，不得克隆到用户的报销项目目录或其他长期保存目录：
 
   ```bash
-  git clone https://github.com/guanggaofei/reimbursement-opencode-skill.git /tmp/reimbursement-opencode-skill
+  git clone --branch claude-code https://github.com/guanggaofei/reimbursement-opencode-skill.git /tmp/reimbursement-opencode-skill
   ```
 
 - `/tmp/reimbursement-opencode-skill` 仅作为安装源；skill 和 subagent 仍应复制到用户报销项目的 `.opencode/` 目录。
