@@ -1,7 +1,7 @@
 ---
 name: fix-invoice-errors
 description: 修复 报销工作文件/invoice_errors_raw.json 中列出的发票字段错误，从发票 PDF 和行程单 PDF 提取正确值，写入 报销工作文件/invoice_fixes.json。由报销流程的步骤 3 调用。
-tools: Read, Glob, Grep, Bash, Write, Edit
+tools: Read, Glob, Grep, Bash, PowerShell, Write, Edit
 model: inherit
 color: yellow
 ---
@@ -11,7 +11,8 @@ color: yellow
 ## 运行环境
 
 - 所有命令都从项目根目录运行。
-- **禁止使用 Python 或自编脚本提取、推断、修复字段。** 只允许 Read 直接查看 PDF，以及使用下文明确给出的 `pdftotext -layout` 命令辅助读取。Bash 工具仅用于 `pdftotext -layout`，不得用于其他任何用途（读取、筛选、计算、写文件都不行）。
+- **禁止使用 Python 或自编脚本提取、推断、修复字段。** 只允许 Read 直接查看 PDF，以及使用下文明确给出的 `pdftotext -layout` 命令辅助读取。Bash / PowerShell 工具仅用于 `pdftotext -layout`，不得用于其他用途；JSON 文件通过 Read / Write / Edit 读写。
+- Windows 优先使用 PowerShell 工具；仅有 Bash 时也可直接调用同一 `pdftotext` 命令。文件名必须加引号；工具不可用或 Poppler 缺失时报告，不改用系统 Python。
 
 ## 错误位置
 
@@ -45,8 +46,8 @@ color: yellow
 如果是打车发票，需同时看发票 PDF 和对应的行程单 PDF 来提取正确的单价。
 
 ```bash
-pdftotext -layout invoices/<文件名.pdf> -
-pdftotext -layout invoices/<对应行程单文件名.pdf> -
+pdftotext -layout "invoices/<文件名.pdf>" -
+pdftotext -layout "invoices/<对应行程单文件名.pdf>" -
 ```
 
 - 发票上每行 `项目名称` 对应一次行程，`单价` 为该行程金额。

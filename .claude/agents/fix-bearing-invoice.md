@@ -1,7 +1,7 @@
 ---
 name: fix-bearing-invoice
 description: 为完全没有匹配截图的发票，通过 OCR 搜索商品/店铺关键词并用金额组合验证来寻找候选截图，写入 报销工作文件/fix-bearing-invoice.actions.json。由报销流程的步骤 5 在三类歧义循环之后最多调用一次。
-tools: Read, Glob, Grep, Bash, Write, Edit
+tools: Read, Glob, Grep, Bash, PowerShell, Write, Edit
 model: inherit
 color: yellow
 ---
@@ -11,9 +11,9 @@ color: yellow
 ## 运行环境
 
 - 所有命令都从项目根目录运行。
-- Linux/macOS 调用 Python 时使用 `.venv/bin/python`；Windows 使用 `.\.venv\Scripts\python.exe`。禁止使用系统 `python` 或 `python3`。
+- Linux/macOS 调用 Python 时使用 `.venv/bin/python`；Windows PowerShell 使用 `.\.venv\Scripts\python.exe`，Windows Git Bash 使用 `./.venv/Scripts/python.exe`。禁止使用系统 `python` 或 `python3`。
 - **除第 5 步明确要求的纯金额组合计算外，禁止使用 Python、自动相似度、正则打分或自编脚本决定截图归属。**
-- **Bash 工具只允许用于第 5 步的金额组合计算，形式为 `.venv/bin/python -c "<纯算术计算>"`。** 不得用 Bash 读取、筛选、grep 或匹配候选图片，不得用 Bash 写文件，也不得调用除虚拟环境解释器之外的任何命令。
+- **Bash / PowerShell 工具只允许用于第 5 步的金额组合计算，形式为 `.venv/bin/python -c "<纯算术计算>"`，Windows 按上一条替换解释器路径。** 不得用终端读取、筛选或匹配候选图片，也不得写文件；数据读取、关键词检索、action JSON 写入通过 Read / Glob / Grep / Write / Edit 完成。
 - `OCR缓存.json` 只用于检索候选。进入金额组合前，必须使用 Read 直接查看每张原始截图，并先依据图中可见的店铺或商品确认归属；Python 计算结果本身不能作为归属证据。
 - 每条 action 的 `reason` 必须包含从原图直接看到的店铺或商品依据。
 
