@@ -1,12 +1,28 @@
 # AGENTS.md
 
-This is the **Codex main branch** (`codex`) of the reimbursement skill.
-The completed opencode and Claude Code editions are maintained on `opencode` and
-`claude-code`. Codex skill source lives in `skills/reimbursement/` and installs into
-the reimbursement project's `.agents/skills/reimbursement/`. `references/fix-*.md`
-are task instructions, not registered agent types. Use available generic subagents
-or execute the same instructions in the main agent; only the main flow applies JSON actions.
-Legacy `agents/` and `.claude/` sources are retained for reference; do not install them for Codex.
+Repository: https://github.com/guanggaofei/reimbursement-skill
+
+`main` is the development and default branch. It retains the skill source, subagent
+definitions, templates, tests, and this development guide. Its README serves only
+as an installation router; keep architecture and contributor instructions here.
+
+The three installation branches are `codex`, `opencode`, and `claude-code`.
+Each branch README documents only its own installation, with links redirecting
+agents targeting another framework. All three support Windows and Linux/macOS.
+Keep tests only on `main`; do not ship `tests/`, `test/`, or test files on installation
+branches. Removing tests there does not remove them from main or Git history.
+
+Preserve the existing framework directories. On main, `skills/reimbursement/`
+contains Codex entrypoints and the shared scripts/templates, `agents/` contains
+opencode subagent definitions, and `.claude/` contains Claude Code entrypoints and
+subagents. opencode entrypoints live on its installation branch under
+`skills/reimbursement/`. Never overwrite a release branch's framework entrypoints
+with the Codex ones when synchronizing common scripts.
+
+Codex installs into `.agents/skills/reimbursement/`; its `references/fix-*.md` are
+task instructions, not registered agent types. opencode uses `.opencode/skills/`
+and `.opencode/agents/`. Claude Code uses `.claude/skills/` and `.claude/agents/`.
+Only the main workflow applies repair/action JSON in all editions.
 
 ## What this is for
 
@@ -23,7 +39,9 @@ skills/reimbursement/
   references/fix-*.md         Codex repair tasks and action contracts
   assets/templates/             Hello World 报账单.xlsx, 支出记录.docx, 支付说明.docx templates
   scripts/                      all the Python — see below
-agents/*.md / .claude/          legacy edition sources; use their release branches
+agents/*.md                    opencode subagent definitions
+.claude/skills/reimbursement/   Claude Code Unix and Windows entrypoints
+.claude/agents/*.md             Claude Code cross-platform subagent definitions
 tests/test_file_layout.py       the only test file; run with pytest
 ```
 
@@ -128,6 +146,9 @@ add a version pin to any install command in `SKILL.md` because of it.
 
 ## Testing
 
+Run tests on `main` using the project virtual environment. Windows equivalent:
+`.\.venv\Scripts\python.exe -m pytest tests/test_file_layout.py -v`.
+
 ```bash
 .venv/bin/python -m pytest tests/test_file_layout.py -v
 ```
@@ -145,6 +166,16 @@ as an off-by-one in the printed PDF, not as an exception.
 
 ## Windows parity
 
-`SKILL.windows.md` mirrors `SKILL.md` with PowerShell commands and `.venv\Scripts\python.exe`. Any process
-change (new script, new step, new cleanup target) needs both files updated in the same commit — there's no
-automated check for drift between them yet.
+Each framework's `SKILL.windows.md` mirrors its `SKILL.md`. Any process change
+(new script, new step, new cleanup target) must update both operating-system entries.
+Claude Code ships both files under `.claude/skills/reimbursement/`; its Windows
+shell-enabled subagents allow PowerShell as well as Bash, with the same narrow
+read/compute restrictions. Git Bash uses `./.venv/Scripts/python.exe`, PowerShell
+uses `.\.venv\Scripts\python.exe`; never send PowerShell syntax directly to Bash.
+
+Before publishing, verify the four branch names, tests only on main, the same
+shared scripts/templates on all branches, valid installation paths and links,
+and complete Windows and Unix packages. Synchronize selected common changes;
+do not merge all of main into release branches and reintroduce tests or other
+framework installation instructions. Push ordinary fast-forward updates to
+`https://github.com/guanggaofei/reimbursement-skill.git` without rewriting history.
