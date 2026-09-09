@@ -1,79 +1,80 @@
-# 报销材料自动整理 Skill
+# 报销材料自动整理 Skill（Codex）
 
-> 当前版本：Claude Code。Codex 主版本请切换到 `codex`；opencode 版本请切换到 `opencode`。
->
-> 三个版本分支：[Codex（主分支）](https://github.com/guanggaofei/reimbursement-opencode-skill/tree/codex) · [opencode](https://github.com/guanggaofei/reimbursement-opencode-skill/tree/opencode) · [Claude Code](https://github.com/guanggaofei/reimbursement-opencode-skill/tree/claude-code)。
->
-> 请使用下方「Claude Code 版本」安装命令。此版本支持 Linux/macOS；Windows 用户可选用 Codex 或 opencode 的 Windows 入口。
+为浙江大学 Hello World 机器人队整理发票 PDF、行程单和费用截图，生成报账单、支出记录、支付材料、大额发票汇总表与打印 PDF。
 
+## 版本分支
 
-本仓库提供 Linux/macOS 与 Windows 两套 opencode 入口，用于自动整理发票 PDF、行程单和费用截图，并生成报账单、支出记录与合并 PDF。支付材料保留原始占位名称，由用户填写姓名后自行压缩。
+| 分支 | 版本 | 安装位置 |
+| --- | --- | --- |
+| [codex](https://github.com/guanggaofei/reimbursement-opencode-skill/tree/codex)（主分支） | Codex，Windows / Linux / macOS | `.agents/skills/reimbursement/` |
+| [opencode](https://github.com/guanggaofei/reimbursement-opencode-skill/tree/opencode) | opencode，Windows / Linux / macOS | `.opencode/skills/` 与 `.opencode/agents/` |
+| [claude-code](https://github.com/guanggaofei/reimbursement-opencode-skill/tree/claude-code) | Claude Code，Linux / macOS | `.claude/skills/` 与 `.claude/agents/` |
 
-## 安装
+选择对应分支，按照该分支的 README 安装。Git 分支名称不支持空格，所以 Claude Code 分支命名为 `claude-code`。三版沿用同一套业务脚本和输出契约；修改业务规则时应同步到另两个分支。
 
-### 运行环境
+## Codex 安装
 
-- Python 3.10 或更高版本，并确保该解释器可使用 `venv` 和 `pip`。
-- Poppler 提供的 `pdftotext` 和 `pdftoppm` 必须都在 `PATH` 中。Linux 通常安装 `poppler-utils`，macOS 可安装 Homebrew `poppler`。
-- Windows 不自带 Poppler，Poppler 官方也不提供 Windows 安装包。可从社区维护的 [poppler-windows releases](https://github.com/oschwartz10612/poppler-windows/releases/latest) 下载预编译包；其中包含 `Library\bin\pdftotext.exe` 和 `Library\bin\pdftoppm.exe`。解压后将 `Library\bin` 加入 `PATH`，再在 PowerShell 中运行 `Get-Command pdftotext,pdftoppm` 验证两个命令。
-- 源 PDF 使用未嵌入字体时，对应字体必须已安装且对 Poppler 可读；合并脚本会在 Poppler 无法创建字体时停止，避免静默生成缺字 PDF。
+需要 Python 3.10+（包含 venv、pip）和 Poppler 的 `pdftotext`、`pdftoppm`。Windows 可从 [poppler-windows](https://github.com/oschwartz10612/poppler-windows/releases/latest) 获取社区构建，将 `Library\bin` 加入 PATH；Linux/macOS 安装相应 Poppler 包。PDF 未嵌入的中文字体也须可被 Poppler 读取。
 
-### Agent 安装要求
+先进入你保存本批报销材料的目录。仓库克隆到系统临时目录作为安装源，报销项目只接收技能文件；以下命令遇到源目录已存在或技能已安装会停止，避免覆盖。更新时先检查已有内容，再明确选择更新的文件。
 
-- Agent 获取本仓库时，必须将 Git 仓库克隆到 `/tmp/reimbursement-opencode-skill`，不得克隆到用户的报销项目目录或其他长期保存目录：
-
-  ```bash
-  git clone --branch claude-code https://github.com/guanggaofei/reimbursement-opencode-skill.git /tmp/reimbursement-opencode-skill
-  ```
-
-- `/tmp/reimbursement-opencode-skill` 仅作为安装源；skill 和 subagent 仍应复制到用户报销项目的 `.opencode/` 目录。
-- 安装完成后，Agent 必须明确告知用户：**重启 opencode，并开启一个新会话，以加载新安装的 skill。** 仅在当前会话中继续操作不能保证新 skill 已被加载。
-
-当前工作目录应为报销项目根目录。
-
-### opencode 版本
-
-Linux/macOS：
-
-```bash
-mkdir -p .opencode/skills/reimbursement .opencode/agents invoices images
-cp -r skills/reimbursement/assets skills/reimbursement/scripts skills/reimbursement/agents .opencode/skills/reimbursement/
-cp skills/reimbursement/SKILL.md .opencode/skills/reimbursement/SKILL.md
-cp agents/fix-bearing-invoice.md agents/fix-duplicate-screenshots.md agents/fix-shop-name-ambiguity.md agents/fix-trip-ambiguity.md .opencode/agents/
-cp agents/fix-invoice-errors.md .opencode/agents/fix-invoice-errors.md
-```
-
-Windows PowerShell：
+### Windows PowerShell
 
 ```powershell
-New-Item -ItemType Directory -Force .opencode\skills\reimbursement, .opencode\agents, invoices, images | Out-Null
-Copy-Item -Recurse -Force skills\reimbursement\assets, skills\reimbursement\scripts, skills\reimbursement\agents .opencode\skills\reimbursement\
-Copy-Item -Force skills\reimbursement\SKILL.windows.md .opencode\skills\reimbursement\SKILL.md
-Copy-Item -Force agents\fix-bearing-invoice.md, agents\fix-duplicate-screenshots.md, agents\fix-shop-name-ambiguity.md, agents\fix-trip-ambiguity.md .opencode\agents\
-Copy-Item -Force agents\fix-invoice-errors.windows.md .opencode\agents\fix-invoice-errors.md
+$taskSource = Join-Path $env:TEMP 'reimbursement-codex-skill'
+if (Test-Path -LiteralPath $taskSource) { throw "安装源已存在，请先检查：$taskSource" }
+if (Test-Path -LiteralPath '.agents/skills/reimbursement') { throw '报销技能已存在，请先检查再更新' }
+git clone --branch codex --single-branch https://github.com/guanggaofei/reimbursement-opencode-skill.git $taskSource
+if ($LASTEXITCODE -ne 0) { throw '克隆失败' }
+New-Item -ItemType Directory -Force '.agents/skills', invoices, images | Out-Null
+Copy-Item -LiteralPath (Join-Path $taskSource 'skills/reimbursement') -Destination '.agents/skills/reimbursement' -Recurse
 ```
 
-`.windows.md` 文件是安装源文件，不应作为额外入口复制到目标项目。
-
-### Claude Code 版本
-
-Claude Code 版本与 opencode 版本共用同一套 `skills/reimbursement/scripts/` 和 `assets/templates/`，仅流程文档和子代理定义按 Claude Code 的约定另写一份，分别位于本仓库的 `.claude/skills/reimbursement/SKILL.md` 和 `.claude/agents/fix-*.md`。两者产出的文件完全一致，可以只装其一，也可以同时安装。
-
-在报销项目根目录下执行，`SRC` 指向本仓库的克隆位置：
+### Linux / macOS
 
 ```bash
-SRC=/tmp/reimbursement-opencode-skill
-mkdir -p .claude/skills/reimbursement .claude/agents invoices images
-cp -r "$SRC/skills/reimbursement/assets" "$SRC/skills/reimbursement/scripts" .claude/skills/reimbursement/
-cp "$SRC/.claude/skills/reimbursement/SKILL.md" .claude/skills/reimbursement/SKILL.md
-cp "$SRC"/.claude/agents/fix-*.md .claude/agents/
+(
+  set -eu
+  SRC=/tmp/reimbursement-codex-skill
+  if [ -e "$SRC" ] || [ -e .agents/skills/reimbursement ]; then
+    echo '安装源或报销技能已存在，请先检查再更新。'
+    exit 1
+  fi
+  git clone --branch codex --single-branch https://github.com/guanggaofei/reimbursement-opencode-skill.git "$SRC"
+  mkdir -p .agents/skills invoices images
+  cp -R "$SRC/skills/reimbursement" .agents/skills/reimbursement
+)
 ```
 
-安装完成后需重启 Claude Code 或开启新会话，以加载新安装的 skill 和 subagent。
+已下载本仓库时，可以跳过克隆，确认当前分支为 `codex`，直接把 `skills/reimbursement/` 完整复制到报销项目的 `.agents/skills/reimbursement/`。请同时保留 `SKILL.md`、`SKILL.windows.md`、`references/`、`agents/openai.yaml`、`scripts/` 和 `assets/`，不要用 Windows 文件覆盖主入口；主入口会根据操作系统引导读取对应流程。
 
-本仓库的 `.claude/skills/reimbursement/` 只存放 `SKILL.md`，不含 `scripts/` 与 `assets/`——脚本在仓库中只保留 `skills/reimbursement/` 下的唯一一份，由上面的安装命令复制到目标项目。因此 `SKILL.md` 中形如 `.claude/skills/reimbursement/scripts/xxx.py` 的路径只在安装后的用户项目中成立，在本仓库内不成立，这与 opencode 版 `SKILL.md` 引用 `.opencode/...` 的方式一致。
+安装后开启 Codex 新会话，在报销项目目录中使用：
 
-Claude Code 版本没有 Windows 专用入口；Windows 用户请使用 opencode 版本的 `SKILL.windows.md`，或自行把 `.claude/skills/reimbursement/SKILL.md` 中的路径与命令改为 PowerShell 形式。
+```text
+请使用 $reimbursement 整理当前文件夹中的报销材料。
+```
+
+将发票和行程单放入 `invoices/`，原始支付记录与账单截图放入 `images/`。技能检查环境并使用本项目 `.venv`；缺少 Python 包时先列出缺项和安装命令。长时间 OCR 匹配仍由用户在自己的终端运行，Codex 会给出含实际绝对路径的完整命令，待用户回复“运行完成”后继续。
+
+## Codex 适配说明
+
+- `skills/reimbursement/SKILL.md` 为主入口和 Unix 八步流程，`SKILL.windows.md` 为对应 PowerShell 八步流程。
+- 五类修复方法放在 `references/fix-*.md`，按需读取。存在子代理工具时可委派通用子代理，否则主代理按同一规则执行；不依赖自定义代理注册。
+- 修复任务只写指定 JSON，主流程串行应用并验证；三类截图歧义各最多三轮，完全无截图发票最多处理一次。
+- 所有截图结论须查看原图；保留既有分类、稳定文件名、原图保护和大额发票规则。
+- `agents/openai.yaml` 提供技能名称和默认提示词。旧 `agents/`、`.claude/` 内容保留供参考，Codex 安装不复制它们。
+
+安装目录、技能发现与元数据依据 [OpenAI 官方技能文档](https://learn.chatgpt.com/docs/build-skills)。
+
+## 开发验证
+
+脚本唯一源码位于 `skills/reimbursement/scripts/`。使用项目虚拟环境运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_file_layout.py -v
+```
+
+Linux/macOS 将解释器改为 `.venv/bin/python`。未安装 pytest 时，同一套 unittest 测试也可用 `-m unittest discover -s tests -p test_file_layout.py -v` 运行。修改任一平台流程时同步检查另一个入口与修复参考说明。
 
 ## 文件布局
 

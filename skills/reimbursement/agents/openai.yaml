@@ -1,4 +1,4 @@
 interface:
-  display_name: "报销"
-  short_description: "整理发票并用 OCR 匹配支出记录。"
-  default_prompt: "Use $reimbursement to整理报销发票和支出记录截图，运行 super_invoice，处理 ERROR/需人工校验，并用 OCR 匹配支付记录。"
+  display_name: "报销材料整理"
+  short_description: "整理发票与费用截图，生成报账单、支出记录、支付材料和打印 PDF"
+  default_prompt: "请使用 $reimbursement 整理当前项目中的发票和支出截图，生成报销材料并报告待核对项。"

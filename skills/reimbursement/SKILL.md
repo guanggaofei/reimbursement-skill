@@ -1,9 +1,14 @@
 ---
 name: reimbursement
-description: "Trigger when the user indicates they are executing the reimbursement workflow."
+description: 整理报销发票和支出记录截图：运行 super_invoice 提取发票字段、处理 ERROR/需人工校验、用 OCR 匹配支付记录与账单截图，生成报账单 XLSX、支出记录 DOCX、支付说明与支付记录、单价大额发票汇总表和合并打印 PDF。当用户提到报销、发票整理、报账单、支出记录、贴发票时使用。
 ---
 
-# 报销流程（Linux/macOS）
+# 报销流程（Codex / Linux / macOS）
+
+整理浙江大学 Hello World 机器人队的报销材料。Windows/PowerShell 必须改读同目录 [SKILL.windows.md](SKILL.windows.md)，按 Windows 命令执行；本文件其余流程适用于 Linux/macOS。
+
+安装目录为报销项目的 `.agents/skills/reimbursement/`。所有命令从报销项目根目录执行，`--root .` 指该目录；仓库源码位于 `skills/reimbursement/`，须按 README 安装后再运行报销流程。日期参数 `YYYY-M-D` 使用用户指定日期，未指定则使用当前本地日期，执行前替换占位符。
+
 
 ## 核心规则
 
@@ -52,11 +57,29 @@ description: "Trigger when the user indicates they are executing the reimburseme
 - `支付记录/`、`支付说明/` 及其中的 DOCX
 - DOCX 解包、XML 调试文件和其他临时产物
 
+## 修复任务的执行方式
+
+开始修复前读取对应参考文件；它们是任务说明，不是自动注册的自定义代理：
+
+| 任务 | 参考文件 | 输出 |
+| --- | --- | --- |
+| 发票字段修复 | [fix-invoice-errors](references/fix-invoice-errors.md) | `报销工作文件/invoice_fixes.json` |
+| 店铺名称歧义 | [fix-shop-name-ambiguity](references/fix-shop-name-ambiguity.md) | `报销工作文件/fix-shop-name-ambiguity.actions.json` |
+| 行程歧义 | [fix-trip-ambiguity](references/fix-trip-ambiguity.md) | `报销工作文件/fix-trip-ambiguity.actions.json` |
+| 重复截图 | [fix-duplicate-screenshots](references/fix-duplicate-screenshots.md) | `报销工作文件/fix-duplicate-screenshots.actions.json` |
+| 完全无截图发票 | [fix-bearing-invoice](references/fix-bearing-invoice.md) | `报销工作文件/fix-bearing-invoice.actions.json` |
+
+若当前 Codex 会话提供子代理工具，可以用可用的通用子代理执行上述任务；不要假设存在同名代理类型，不使用其他产品的代理调用语法。没有子代理工具时，由主代理读取参考文件并执行同一任务。以下“调用/新建子代理”均按此规则执行；主代理自行执行时，每轮也必须重新读取最新状态，不能沿用已解决条目。
+
+每次委派均传入项目根目录绝对路径、参考文件绝对路径、本轮具体未解决条目、输出文件绝对路径、当前轮次及上限。明确要求只写指定修复/action JSON，不应用修改，不直接改 `匹配记录.json`；无法可靠判断时报告原因，不猜测。不要假设子代理继承上下文。逐个等待任务完成、核对本轮输出，再由主流程应用，禁止并发写入。
+
+使用当前会话的文件读取工具读取 JSON，使用图像查看工具打开原始截图。仅有 OCR 文本不算看过原图；无法查看时保留未匹配并报告。允许用终端只读命令读取/搜索文本和用文件编辑工具写指定 JSON，不得用自编识别算法替代视觉判断。参考文件中的额外命令限制只针对识别/计算，不禁止这些基础文件操作。
+
 ## 自动化流程
 
 ### 1. 清理本轮派生产物
 
-保留 `invoices/`、`images/`、`OCR缓存.json`、`匹配记录.json`、历史报账单和 skill 文件。清理其余本轮派生产物：
+保留 `invoices/`、`images/`、`OCR缓存.json`、`匹配记录.json`、历史报账单和 skill 文件。只清理下列本轮派生产物。先确认实际项目根目录及每个删除目标均在该目录内，不跟随符号链接清理外部目录；恢复中断流程时按用户指定起点继续，不重跑清理：
 
 ```bash
 rm -rf output/ 报销工作文件/ 待审核截图/ 大额发票/
@@ -71,38 +94,45 @@ rm -f 单价大额发票汇总表.xlsx 合并发票_纵向居中.pdf
 确认 `invoices/` 和 `images/` 存在，然后运行：
 
 ```bash
-.venv/bin/python .opencode/skills/reimbursement/scripts/check_taxi_pairs.py --root .
+.venv/bin/python .agents/skills/reimbursement/scripts/check_taxi_pairs.py --root .
 ```
 
 ### 3. 运行发票提取并修复字段
 
 ```bash
-.venv/bin/python .opencode/skills/reimbursement/scripts/super_invoice.py --root .
-.venv/bin/python .opencode/skills/reimbursement/scripts/check_invoice_errors.py --root .
+.venv/bin/python .agents/skills/reimbursement/scripts/super_invoice.py --root .
+.venv/bin/python .agents/skills/reimbursement/scripts/check_invoice_errors.py --root .
 ```
 
-`check_invoice_errors.py` 写入 `报销工作文件/invoice_errors_raw.json`。若其中 `error_count > 0`，调用 `@fix-invoice-errors`；subagent 只读取该错误列表，并写入 `报销工作文件/invoice_fixes.json`。然后执行：
+`check_invoice_errors.py` 写入 `报销工作文件/invoice_errors_raw.json`。若其中 `error_count > 0`，按上述执行方式调用 `fix-invoice-errors`。它只读取该错误列表并写入 `报销工作文件/invoice_fixes.json`。调用时 prompt 必须包含：
+
+- 项目根目录绝对路径。
+- 本轮要修复的错误条目（从 `invoice_errors_raw.json` 的 `errors[]` 逐条列出 `文件名`、`字段`、`当前值`），只列本轮仍未解决的。
+- 输出文件路径 `报销工作文件/invoice_fixes.json`，并说明只写该文件、不要自行应用。
+- 本轮轮次和 3 轮上限。
+
+然后执行：
 
 ```bash
-.venv/bin/python .opencode/skills/reimbursement/scripts/apply_invoice_fixes.py --root .
-.venv/bin/python .opencode/skills/reimbursement/scripts/check_invoice_errors.py --root .
+.venv/bin/python .agents/skills/reimbursement/scripts/apply_invoice_fixes.py --root .
+.venv/bin/python .agents/skills/reimbursement/scripts/check_invoice_errors.py --root .
 ```
 
 最多修复 3 轮；错误数不下降或字段无法可靠确定时停止。若根目录存在历史 `第x批报账单.xlsx`，运行 `cross_batch_dedup.py --root .`，然后重新执行本步骤。最终再次运行 `super_invoice.py --root .`，确认它仍只生成根目录 `invoice_results.json`、`invoice_results_sorted.json`、`invoice_errors.json` 和 `output/`。
 
-`invoice_errors.json` 中的 `未匹配分类` 是业务判定结果，不属于字段级错误，`@fix-invoice-errors` 修不了它，修复循环也不会因它继续。该类发票归入 `output/5_未匹配/`，常见成因是项目提取失败、非辰景的住宿发票，或所有单价都无法解析。这类发票仍会进入报账单和支出记录以免漏报，但需要向用户逐张列出，由用户确认其报销通道。
+`invoice_errors.json` 中的 `未匹配分类` 是业务判定结果，不属于字段级错误，`fix-invoice-errors` 修不了它，修复循环也不会因它继续。该类发票归入 `output/5_未匹配/`，常见成因是项目提取失败、非辰景的住宿发票，或所有单价都无法解析。这类发票仍会进入报账单和支出记录以免漏报，但需要向用户逐张列出，由用户确认其报销通道。
 
 ### 4. 提取行程数据
 
 ```bash
-.venv/bin/python .opencode/skills/reimbursement/scripts/extract_trip_sheets.py --root .
+.venv/bin/python .agents/skills/reimbursement/scripts/extract_trip_sheets.py --root .
 ```
 
 输出 `报销工作文件/行程单数据.json`。
 
 ### 5. OCR 与截图匹配
 
-OCR 可能耗时很长，禁止由代理直接运行 `organize_expense_records.py`，以免 opencode 超时终止进程。代理必须暂停流程，请用户在自己的终端中运行，并等待用户确认完成后再继续。
+OCR 可能耗时很长，**禁止由代理直接运行 `organize_expense_records.py`**，以免工具调用超时被中断。代理必须暂停流程，请用户在自己的终端中运行，并等待用户确认完成后再继续。不要试图用后台运行绕开这条限制。
 
 面向不熟悉终端的用户时，按以下方式说明：
 
@@ -110,54 +140,56 @@ OCR 可能耗时很长，禁止由代理直接运行 `organize_expense_records.p
 2. 根据当前项目根目录生成一条可直接复制的完整命令，路径必须替换为实际绝对路径，不得保留占位符：
 
 ```bash
-cd "/实际的项目根目录" && .venv/bin/python .opencode/skills/reimbursement/scripts/organize_expense_records.py --root .
+cd "/实际的项目根目录" && .venv/bin/python .agents/skills/reimbursement/scripts/organize_expense_records.py --root .
 ```
 
 3. 告诉用户把整行命令复制到终端，按回车后不要关闭终端，等待看到“OCR 处理完成”。
-4. 告诉用户完成后回到 opencode 回复“运行完成”。用户确认前不得继续后续步骤。
+4. 告诉用户完成后回到会话回复“运行完成”。用户确认前不得继续后续步骤。
 5. 告诉用户如果运行意外中断，重新执行同一行命令即可；脚本会读取 `OCR缓存.json`，已识别的图片不需要重做。
 
-读取根目录输入、三个 JSON、`output/` 与稳定缓存，写入：
+该脚本读取根目录输入、三个 JSON、`output/` 与稳定缓存，写入：
 
 - 根目录 `OCR缓存.json`、`匹配记录.json`、`支出记录OCR整理结果.md`
 - `报销工作文件/支出记录OCR匹配明细.md`
 
 新增少量截图时也由用户按上述方式运行单行命令，并在末尾添加 `--scan-only`。
 
-subagent 只写 action JSON，不自行应用；由主流程统一执行：
-
-```bash
-.venv/bin/python .opencode/skills/reimbursement/scripts/apply_match_actions.py --root . --actions 报销工作文件/<agent-name>.actions.json
-```
-
 先运行覆盖率检查，刷新用户报告并生成机器可读的分类计数：
 
 ```bash
-.venv/bin/python .opencode/skills/reimbursement/scripts/verify_screenshot_coverage.py --root . --update-report --issue-summary-json 报销工作文件/截图问题统计.json
+.venv/bin/python .agents/skills/reimbursement/scripts/verify_screenshot_coverage.py --root . --update-report --issue-summary-json 报销工作文件/截图问题统计.json
 ```
 
-按“店铺名称歧义 → 行程歧义 → 重复截图”的顺序处理，禁止并行写 action。三类问题分别执行独立的收敛循环：
+按“店铺名称歧义 → 行程歧义 → 重复截图”的顺序处理，**禁止并行调用**这三个子代理，否则会互相覆盖 action 文件。三类问题分别执行独立的收敛循环：
 
-| 计数键 | subagent | action 文件 |
+| 计数键 | 修复任务 | action 文件 |
 | --- | --- | --- |
-| `店铺名称歧义` | `@fix-shop-name-ambiguity` | `报销工作文件/fix-shop-name-ambiguity.actions.json` |
-| `行程歧义` | `@fix-trip-ambiguity` | `报销工作文件/fix-trip-ambiguity.actions.json` |
-| `重复截图` | `@fix-duplicate-screenshots` | `报销工作文件/fix-duplicate-screenshots.actions.json` |
+| `店铺名称歧义` | `fix-shop-name-ambiguity` | `报销工作文件/fix-shop-name-ambiguity.actions.json` |
+| `行程歧义` | `fix-trip-ambiguity` | `报销工作文件/fix-trip-ambiguity.actions.json` |
+| `重复截图` | `fix-duplicate-screenshots` | `报销工作文件/fix-duplicate-screenshots.actions.json` |
 
-每一类型最多处理 3 轮。每轮读取 `截图问题统计.json` 中该类型的轮前数量，只把当前仍未解决的条目交给一个新的同类型 subagent；应用其 action 后重新运行覆盖率检查并读取轮后数量。轮后数量下降且仍大于 0 时继续下一轮；降为 0 时完成；数量未下降、subagent 无可靠 action 或达到 3 轮时立即停止该类型并报告残留，不得反复空跑。
+子代理只写 action JSON，不自行应用；将下方 <agent-name> 替换为本轮任务名，每轮由主流程统一执行：
 
-`@fix-bearing-invoice` 只处理“完全无截图发票”，在上述三类循环之后最多调用一次，不执行收敛重试。应用其 action 后最后再运行一次覆盖率检查并刷新报告与分类计数。
+```bash
+.venv/bin/python .agents/skills/reimbursement/scripts/apply_match_actions.py --root . --actions "报销工作文件/<agent-name>.actions.json"
+```
+
+每一类型最多处理 3 轮。每轮读取 `截图问题统计.json` 中该类型的轮前数量，只把当前仍未解决的条目交给一个新的同类型 subagent（每轮都新起一个，不要复用上一轮的）；应用其 action 后重新运行覆盖率检查并读取轮后数量。轮后数量下降且仍大于 0 时继续下一轮；降为 0 时完成；数量未下降、subagent 无可靠 action 或达到 3 轮时立即停止该类型并报告残留，不得反复空跑。
+
+调用这三个子代理时，prompt 除通用四项外还要带上本轮待处理条目的具体清单——从 `报销工作文件/支出记录OCR匹配明细.md` 里摘出对应标记（`金额对应多个候选发票` / `金额对应多个候选行程` / `同时匹配同一发票，需人工识别`）的图片路径和候选发票，逐条列明。
+
+`fix-bearing-invoice` 只处理“完全无截图发票”，在上述三类循环之后最多调用一次，不执行收敛重试。调用时 prompt 中要给出待处理的稳定发票路径列表，形如 `invoices/example.pdf,invoices/example2.pdf`，其中文件名取自 `invoice_results_sorted.json` 的 `文件名` 字段。应用其 action 后最后再运行一次覆盖率检查并刷新报告与分类计数。
 
 将仍在 `匹配记录.json` 的 `未匹配截图[]` 中的原图复制到根目录 `待审核截图/`，不移动或改名原图。
 
 ### 6. 生成 DOCX 与 XLSX
 
 ```bash
-.venv/bin/python .opencode/skills/reimbursement/scripts/generate_expense_record_docx.py --root .
-.venv/bin/python .opencode/skills/reimbursement/scripts/generate_payment_record_docx.py --root .
-.venv/bin/python .opencode/skills/reimbursement/scripts/generate_payment_explanations.py --root . --date YYYY-M-D
-.venv/bin/python .opencode/skills/reimbursement/scripts/generate_reimbursement_xlsx.py --root .
-.venv/bin/python .opencode/skills/reimbursement/scripts/generate_high_value_invoices.py --root .
+.venv/bin/python .agents/skills/reimbursement/scripts/generate_expense_record_docx.py --root .
+.venv/bin/python .agents/skills/reimbursement/scripts/generate_payment_record_docx.py --root .
+.venv/bin/python .agents/skills/reimbursement/scripts/generate_payment_explanations.py --root . --date YYYY-M-D
+.venv/bin/python .agents/skills/reimbursement/scripts/generate_reimbursement_xlsx.py --root .
+.venv/bin/python .agents/skills/reimbursement/scripts/generate_high_value_invoices.py --root .
 ```
 
 两份最终 Office 文件位于根目录；支付记录、支付说明及技术/调试文件位于 `报销工作文件/`；仅在存在需要确认或查看的分组时，在根目录保留 `支付说明生成结果.md`。
@@ -182,12 +214,12 @@ subagent 只写 action JSON，不自行应用；由主流程统一执行：
 - 另列出仍在 `未匹配截图[]` 中的每张截图原路径和原因，确保用户能精确定位需要核对的图片。
 - 存在大额发票时，读取 `大额发票生成结果.md` 的“待处理问题”表，逐张列出缺少订单截图或支付记录的大额发票；这类发票的截图缺口不会阻断流程，但会导致汇总表无法完整提交。
 - 存在 `invoice_errors.json` 的 `未匹配分类` 条目时，逐张列出发票文件名和问题原因，说明它们已归入 `output/5_未匹配/` 且仍在报账单中，请用户确认报销通道。
-- 即使没有缺口，也要明确告知“所有发票截图已完整匹配”。该告知是进度通知，不中断后续打包流程，除非用户要求暂停。
+- 即使没有缺口，也要明确告知“所有发票截图已完整匹配”。该告知是进度通知，不中断后续合并流程，除非用户要求暂停。
 
 ### 7. 合并 PDF
 
 ```bash
-.venv/bin/python .opencode/skills/reimbursement/scripts/merge_output_pdfs.py --root .
+.venv/bin/python .agents/skills/reimbursement/scripts/merge_output_pdfs.py --root .
 ```
 
 命令完成后，提示用户完成以下收尾操作：

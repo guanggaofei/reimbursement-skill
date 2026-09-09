@@ -1,10 +1,12 @@
-# CLAUDE.md
+# AGENTS.md
 
-This repo is an **opencode skill** (`skills/reimbursement/`), not a Claude Code skill — the directory
-layout, agent invocation syntax (`@agent-name`), and `SKILL.md` frontmatter all follow opencode's
-conventions. It automates the reimbursement workflow for a 浙江大学 Hello World 机器人队 team: OCR-extract
-invoice fields, classify invoices, match screenshots to invoices, and generate the 报账单/支出记录/支付
-材料 that get submitted to 飞书.
+This is the **Codex main branch** (`codex`) of the reimbursement skill.
+The completed opencode and Claude Code editions are maintained on `opencode` and
+`claude-code`. Codex skill source lives in `skills/reimbursement/` and installs into
+the reimbursement project's `.agents/skills/reimbursement/`. `references/fix-*.md`
+are task instructions, not registered agent types. Use available generic subagents
+or execute the same instructions in the main agent; only the main flow applies JSON actions.
+Legacy `agents/` and `.claude/` sources are retained for reference; do not install them for Codex.
 
 ## What this is for
 
@@ -17,10 +19,11 @@ invariants the code depends on, and gotchas that have already caused bugs once.
 ```
 skills/reimbursement/
   SKILL.md / SKILL.windows.md   the process, step by step (this is what the agent follows)
-  agents/openai.yaml            opencode-facing display name / default prompt
+  agents/openai.yaml            Codex UI metadata / default prompt
+  references/fix-*.md         Codex repair tasks and action contracts
   assets/templates/             Hello World 报账单.xlsx, 支出记录.docx, 支付说明.docx templates
   scripts/                      all the Python — see below
-agents/*.md                     opencode subagent definitions (@fix-invoice-errors etc.), NOT under skills/
+agents/*.md / .claude/          legacy edition sources; use their release branches
 tests/test_file_layout.py       the only test file; run with pytest
 ```
 
@@ -70,7 +73,7 @@ Unit prices are parsed with `Decimal(str(value))`, never `isinstance(..., (int, 
 ### Two independent error pipelines — don't conflate them
 
 - `check_invoice_errors.py` → `报销工作文件/invoice_errors_raw.json`: scans for literal `"ERROR"` /
-  `"需人工校验"` field values. Drives the `@fix-invoice-errors` fix loop (max 3 rounds). This is about
+  `"需人工校验"` field values. Drives the `fix-invoice-errors` fix loop (max 3 rounds). This is about
   **extraction quality**, not business rules.
 - `super_invoice.check_invoice_errors()` (confusingly similar name, different function) → root
   `invoice_errors.json`: business-rule findings (家具/日用杂品/单价超1000/连号发票/打车缺行程单/未匹配分类).
@@ -113,7 +116,7 @@ python3 -m venv .venv
     pdfplumber rapidocr-onnxruntime onnxruntime Pillow pypinyin pypdf python-docx lxml
 ```
 
-All scripts are invoked as `.venv/bin/python .opencode/skills/reimbursement/scripts/<script>.py --root .`
+On Windows use `.venv\Scripts\python.exe`. All Unix scripts are invoked as `.venv/bin/python .agents/skills/reimbursement/scripts/<script>.py --root .`
 — never the system `python`/`python3`. Poppler (`pdftotext`, `pdftoppm`) must be installed separately and
 on `PATH`.
 
