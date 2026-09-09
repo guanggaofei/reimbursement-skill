@@ -8,8 +8,6 @@ metadata:
 
 # 报销流程（Claude Code / Linux / macOS）
 
-本 skill 与 opencode 版本共用同一套 Python 脚本和数据契约，产出完全一致的文件。差异仅在子代理的调用方式。
-
 ## 核心规则
 
 1. 默认从步骤 1 顺序执行；仅在用户明确指定起点时跳转。
