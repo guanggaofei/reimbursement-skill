@@ -6,9 +6,11 @@ metadata:
     bins: ["pdftotext", "pdftoppm"]
 ---
 
-# 报销流程（Claude Code / Linux / macOS）
+# 报销流程（Claude Code / Windows）
 
-Windows 原生环境先读取同目录 [SKILL.windows.md](SKILL.windows.md)，按其中的 PowerShell 命令执行；WSL 按本入口使用 Linux 环境和 Linux 虚拟环境，不混用 Windows 解释器。
+本入口用于 Windows 原生环境。Linux/macOS 与 WSL 使用同目录 [SKILL.md](SKILL.md)。下列代码块为 PowerShell 语法；主流程优先使用 PowerShell 工具。若只有 Bash，Python 命令改用 `./.venv/Scripts/python.exe`；PowerShell 专用命令通过 `powershell.exe -NoProfile -Command` 调用，按外层 Bash 规则保护引号和美元符号。不得将 PowerShell 代码直接交给 Bash。
+
+每条外部命令执行后检查 `$LASTEXITCODE`，非零时停止；不要因后面的命令成功而忽略前面的失败。依次处理每个代码块中的命令。所有命令从报销项目根目录执行；日期占位符 `YYYY-M-D` 在执行前替换为用户指定日期，未指定时使用当前本地日期。
 
 ## 核心规则
 
@@ -20,18 +22,18 @@ Windows 原生环境先读取同目录 [SKILL.windows.md](SKILL.windows.md)，�
 
 ## 环境
 
-先运行 `python3 --version`，确认 Python 为 3.10 或更高版本且可使用 `venv` 和 `pip`。使用项目 `.venv`；不存在时运行 `python3 -m venv .venv`，创建失败时停止并报告。所需 Python 包包括 `pdfplumber`、`rapidocr-onnxruntime`、`onnxruntime`、`Pillow`、`pypinyin`、`pypdf`、`python-docx`、`lxml`。
+先运行 `py -3 --version`，确认 Python 为 3.10 或更高版本且可使用 `venv` 和 `pip`。使用项目 `.venv`；不存在时运行 `py -3 -m venv .venv`，创建失败时停止并报告。所需 Python 包包括 `pdfplumber`、`rapidocr-onnxruntime`、`onnxruntime`、`Pillow`、`pypinyin`、`pypdf`、`python-docx`、`lxml`。
 
-开始流程前确认 `pdftotext` 和 `pdftoppm` 均可执行；任一缺失时停止并告知用户需要安装 Poppler，不自行安装系统软件。
+开始流程前通过 `Get-Command pdftotext,pdftoppm` 确认两个命令均可执行；任一缺失时停止并告知用户需要安装 Poppler，不自行安装系统软件。
 源 PDF 使用未嵌入的中文字体时，Poppler 必须能访问对应字体；出现字体创建失败时停止并报告具体 PDF，不继续生成缺字文档。
 
 缺少 Python 包时，先向用户列出缺少的包、用途和完整安装命令并等待批准。完整环境安装命令为：
 
-```bash
-.venv/bin/python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple pdfplumber rapidocr-onnxruntime onnxruntime Pillow pypinyin pypdf python-docx lxml
+```powershell
+.\.venv\Scripts\python.exe -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple pdfplumber rapidocr-onnxruntime onnxruntime Pillow pypinyin pypdf python-docx lxml
 ```
 
-只缺少部分包时仅安装缺少项，不重复安装全部依赖。所有 Python 脚本必须通过 `.venv/bin/python` 调用，禁止使用系统 `python` 或 `python3`。
+只缺少部分包时仅安装缺少项，不重复安装全部依赖。所有 Python 脚本必须通过 `.\.venv\Scripts\python.exe` 调用，禁止使用系统 `python` 或 `python3`。
 
 ## 路径约定
 
@@ -63,7 +65,7 @@ Windows 原生环境先读取同目录 [SKILL.windows.md](SKILL.windows.md)，�
 
 **这些子代理以零上下文启动**，看不到本次会话的任何内容。每次调用的 prompt 必须自带它工作所需的全部信息，至少包含：
 
-1. **项目根目录的绝对路径**，例如 `/Users/xxx/报销2026`。子代理的所有相对路径以此为基准。
+1. **项目根目录的绝对路径**，例如 `C:\Users\xxx\报销2026`。子代理的所有相对路径以此为基准。
 2. **本轮要处理的具体条目**，从对应的统计/错误文件里摘出来逐条列明，不要只说“处理所有问题”。已在前几轮解决的条目不要再传。
 3. **它要写入的 action 文件路径**（见下表），并明确要求它只写 action 文件、不要自己应用、不要直接改 `匹配记录.json`。
 4. **本轮是第几轮、上限 3 轮**，以及“无法可靠判断时保留未匹配并说明原因，不要猜测”。
@@ -76,27 +78,41 @@ Windows 原生环境先读取同目录 [SKILL.windows.md](SKILL.windows.md)，�
 
 保留 `invoices/`、`images/`、`OCR缓存.json`、`匹配记录.json`、历史报账单和 skill 文件。清理其余本轮派生产物：
 
-```bash
-rm -rf output/ 报销工作文件/ 待审核截图/ 大额发票/
-rm -f invoice_results.json invoice_results_sorted.json invoice_errors.json
-rm -f 支出记录OCR整理结果.md 支付说明生成结果.md 大额发票生成结果.md
-rm -f 'Hello World 2026报账单填写结果.xlsx' 'Hello World 2026支出记录填写结果.docx'
-rm -f 单价大额发票汇总表.xlsx 合并发票_纵向居中.pdf
+```powershell
+$taskRoot = (Get-Location).ProviderPath
+$taskTargets = @('output', '报销工作文件', '待审核截图', '大额发票',
+  'invoice_results.json', 'invoice_results_sorted.json', 'invoice_errors.json',
+  '支出记录OCR整理结果.md', '支付说明生成结果.md', '大额发票生成结果.md',
+  'Hello World 2026报账单填写结果.xlsx', 'Hello World 2026支出记录填写结果.docx',
+  '单价大额发票汇总表.xlsx', '合并发票_纵向居中.pdf')
+foreach ($taskName in $taskTargets) {
+  $taskPath = [IO.Path]::GetFullPath((Join-Path $taskRoot $taskName))
+  if ([IO.Path]::GetDirectoryName($taskPath) -ne $taskRoot.TrimEnd('\')) {
+    throw "清理目标不在项目根目录：$taskPath"
+  }
+  if (Test-Path -LiteralPath $taskPath) {
+    $taskItem = Get-Item -LiteralPath $taskPath -Force
+    if ($taskItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+      throw "拒绝清理链接目标：$taskPath"
+    }
+    Remove-Item -LiteralPath $taskPath -Recurse -Force
+  }
+}
 ```
 
 ### 2. 验证输入与出租车配对
 
 确认 `invoices/` 和 `images/` 存在，然后运行：
 
-```bash
-.venv/bin/python .claude/skills/reimbursement/scripts/check_taxi_pairs.py --root .
+```powershell
+.\.venv\Scripts\python.exe .claude/skills/reimbursement/scripts/check_taxi_pairs.py --root .
 ```
 
 ### 3. 运行发票提取并修复字段
 
-```bash
-.venv/bin/python .claude/skills/reimbursement/scripts/super_invoice.py --root .
-.venv/bin/python .claude/skills/reimbursement/scripts/check_invoice_errors.py --root .
+```powershell
+.\.venv\Scripts\python.exe .claude/skills/reimbursement/scripts/super_invoice.py --root .
+.\.venv\Scripts\python.exe .claude/skills/reimbursement/scripts/check_invoice_errors.py --root .
 ```
 
 `check_invoice_errors.py` 写入 `报销工作文件/invoice_errors_raw.json`。若其中 `error_count > 0`，用 Agent 工具调用 `fix-invoice-errors`。它只读取该错误列表并写入 `报销工作文件/invoice_fixes.json`。调用时 prompt 必须包含：
@@ -108,9 +124,9 @@ rm -f 单价大额发票汇总表.xlsx 合并发票_纵向居中.pdf
 
 然后执行：
 
-```bash
-.venv/bin/python .claude/skills/reimbursement/scripts/apply_invoice_fixes.py --root .
-.venv/bin/python .claude/skills/reimbursement/scripts/check_invoice_errors.py --root .
+```powershell
+.\.venv\Scripts\python.exe .claude/skills/reimbursement/scripts/apply_invoice_fixes.py --root .
+.\.venv\Scripts\python.exe .claude/skills/reimbursement/scripts/check_invoice_errors.py --root .
 ```
 
 最多修复 3 轮；错误数不下降或字段无法可靠确定时停止。若根目录存在历史 `第x批报账单.xlsx`，运行 `cross_batch_dedup.py --root .`，然后重新执行本步骤。最终再次运行 `super_invoice.py --root .`，确认它仍只生成根目录 `invoice_results.json`、`invoice_results_sorted.json`、`invoice_errors.json` 和 `output/`。
@@ -119,8 +135,8 @@ rm -f 单价大额发票汇总表.xlsx 合并发票_纵向居中.pdf
 
 ### 4. 提取行程数据
 
-```bash
-.venv/bin/python .claude/skills/reimbursement/scripts/extract_trip_sheets.py --root .
+```powershell
+.\.venv\Scripts\python.exe .claude/skills/reimbursement/scripts/extract_trip_sheets.py --root .
 ```
 
 输出 `报销工作文件/行程单数据.json`。
@@ -131,11 +147,11 @@ OCR 可能耗时很长，**禁止由代理直接运行 `organize_expense_records
 
 面向不熟悉终端的用户时，按以下方式说明：
 
-1. 告诉用户按 `Ctrl+Alt+T` 打开终端；macOS 用户按 `Command+空格`，输入“终端”并打开。
+1. 告诉用户按 `Win+R`，输入 `powershell`，再按回车打开终端。
 2. 根据当前项目根目录生成一条可直接复制的完整命令，路径必须替换为实际绝对路径，不得保留占位符：
 
-```bash
-cd "/实际的项目根目录" && .venv/bin/python .claude/skills/reimbursement/scripts/organize_expense_records.py --root .
+```powershell
+Set-Location -LiteralPath 'C:\实际的项目根目录'; & .\.venv\Scripts\python.exe .claude/skills/reimbursement/scripts/organize_expense_records.py --root .
 ```
 
 3. 告诉用户把整行命令复制到终端，按回车后不要关闭终端，等待看到“OCR 处理完成”。
@@ -151,8 +167,8 @@ cd "/实际的项目根目录" && .venv/bin/python .claude/skills/reimbursement/
 
 先运行覆盖率检查，刷新用户报告并生成机器可读的分类计数：
 
-```bash
-.venv/bin/python .claude/skills/reimbursement/scripts/verify_screenshot_coverage.py --root . --update-report --issue-summary-json 报销工作文件/截图问题统计.json
+```powershell
+.\.venv\Scripts\python.exe .claude/skills/reimbursement/scripts/verify_screenshot_coverage.py --root . --update-report --issue-summary-json 报销工作文件/截图问题统计.json
 ```
 
 按“店铺名称歧义 → 行程歧义 → 重复截图”的顺序处理，**禁止并行调用**这三个子代理，否则会互相覆盖 action 文件。三类问题分别执行独立的收敛循环：
@@ -165,8 +181,8 @@ cd "/实际的项目根目录" && .venv/bin/python .claude/skills/reimbursement/
 
 子代理只写 action JSON，不自行应用；将下方 `<agent-name>` 替换为本轮子代理名称，再由主流程统一执行：
 
-```bash
-.venv/bin/python .claude/skills/reimbursement/scripts/apply_match_actions.py --root . --actions "报销工作文件/<agent-name>.actions.json"
+```powershell
+.\.venv\Scripts\python.exe .claude/skills/reimbursement/scripts/apply_match_actions.py --root . --actions "报销工作文件/<agent-name>.actions.json"
 ```
 
 每一类型最多处理 3 轮。每轮读取 `截图问题统计.json` 中该类型的轮前数量，只把当前仍未解决的条目交给一个新的同类型 subagent（每轮都新起一个，不要复用上一轮的）；应用其 action 后重新运行覆盖率检查并读取轮后数量。轮后数量下降且仍大于 0 时继续下一轮；降为 0 时完成；数量未下降、subagent 无可靠 action 或达到 3 轮时立即停止该类型并报告残留，不得反复空跑。
@@ -179,12 +195,12 @@ cd "/实际的项目根目录" && .venv/bin/python .claude/skills/reimbursement/
 
 ### 6. 生成 DOCX 与 XLSX
 
-```bash
-.venv/bin/python .claude/skills/reimbursement/scripts/generate_expense_record_docx.py --root .
-.venv/bin/python .claude/skills/reimbursement/scripts/generate_payment_record_docx.py --root .
-.venv/bin/python .claude/skills/reimbursement/scripts/generate_payment_explanations.py --root . --date YYYY-M-D
-.venv/bin/python .claude/skills/reimbursement/scripts/generate_reimbursement_xlsx.py --root .
-.venv/bin/python .claude/skills/reimbursement/scripts/generate_high_value_invoices.py --root .
+```powershell
+.\.venv\Scripts\python.exe .claude/skills/reimbursement/scripts/generate_expense_record_docx.py --root .
+.\.venv\Scripts\python.exe .claude/skills/reimbursement/scripts/generate_payment_record_docx.py --root .
+.\.venv\Scripts\python.exe .claude/skills/reimbursement/scripts/generate_payment_explanations.py --root . --date YYYY-M-D
+.\.venv\Scripts\python.exe .claude/skills/reimbursement/scripts/generate_reimbursement_xlsx.py --root .
+.\.venv\Scripts\python.exe .claude/skills/reimbursement/scripts/generate_high_value_invoices.py --root .
 ```
 
 两份最终 Office 文件位于根目录；支付记录、支付说明及技术/调试文件位于 `报销工作文件/`；仅在存在需要确认或查看的分组时，在根目录保留 `支付说明生成结果.md`。
@@ -213,8 +229,8 @@ cd "/实际的项目根目录" && .venv/bin/python .claude/skills/reimbursement/
 
 ### 7. 合并 PDF
 
-```bash
-.venv/bin/python .claude/skills/reimbursement/scripts/merge_output_pdfs.py --root .
+```powershell
+.\.venv\Scripts\python.exe .claude/skills/reimbursement/scripts/merge_output_pdfs.py --root .
 ```
 
 命令完成后，提示用户完成以下收尾操作：
